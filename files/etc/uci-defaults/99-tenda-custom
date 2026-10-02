@@ -38,7 +38,124 @@ switch_mirror() {
 }
 
 # -----------------------------------------------------------------------------
-# 2. LAN 地址确认
+# 2. DHCP / 防火墙 / SSH / 系统配置
+# -----------------------------------------------------------------------------
+# ⚠️ 为什么这四项不在固件里以 /etc/config/* 文件形式下发，
+#    而要在这里用 uci batch 写：
+#    apk 严格维护文件归属。/etc/config/dhcp 属于 dnsmasq、
+#    /etc/config/dropbear 属于 dropbear、/etc/config/firewall 属于 firewall4，
+#    自定义包直接覆盖会报
+#        ERROR: trying to overwrite etc/config/dhcp owned by dnsmasq
+#    导致 package/install 整体失败、固件产不出来（Run #9 栽在这）。
+#    /etc/config/network 没人声明归属，所以它由 tenda-preset 包直接安装。
+#
+#    首次开机用 uci batch 写入是 OpenWrt 官方发默认配置的正统做法。
+# -----------------------------------------------------------------------------
+apply_base_config() {
+	# ---- DHCP：池 .100-.199，租期 12h，并指向预置网关 ----
+	uci batch <<-'UCI' 2>/dev/null || warn "uci batch 部分条目失败（可忽略）"
+		set dhcp.lan=dnsmasq
+		set dhcp.lan='interface'
+		set dhcp.lan.interface='lan'
+		set dhcp.lan.start='100'
+		set dhcp.lan.limit='100'
+		set dhcp.lan.leasetime='12h'
+		set dhcp.lan.dhcpv4='server'
+		set dhcp.lan.ra='server'
+		set dhcp.lan.dhcpv6='server'
+		set dhcp.lan.ndp='hybrid'
+		set dhcp.lan.force='1'
+		delete dhcp.lan.dhcp_option
+		delete dhcp.odhcpd
+		set dhcp.odhcpd='odhcpd'
+		set dhcp.odhcpd.maindhcp='0'
+	UCI
+
+	# ---- 防火墙：lan / wan+wan2 双出口 ----
+	# ⚠️ 不用 @zone[1]/@zone[2] 这种固定匿名索引 —— 官方默认配置里
+	#    lan/wan 落在第几个是不保证的（不同版本、不同 base-files 都可能不同），
+	#    写死索引轻则改错段、重则把 lan 配成 wan 直接断网。
+	#    这里按 zone 的 name 字段反查真实索引。
+	local zlan zwan
+	zlan="$(uci -q show firewall | sed -n "s/^firewall\.\(@zone\[[0-9]\+\]\)\.name='lan'$/\1/p")"
+	zwan="$(uci -q show firewall | sed -n "s/^firewall\.\(@zone\[[0-9]\+\]\)\.name='wan'$/\1/p")"
+	[ -z "$zlan" ] && zlan="@zone[0]"
+	[ -z "$zwan" ] && zwan="@zone[1]"
+	log "防火墙 zone 索引: lan=$zlan  wan=$zwan"
+
+	uci batch <<-UCI 2>/dev/null || warn "uci batch 部分条目失败（可忽略）"
+		set firewall.@defaults[0].syn_flood='1'
+		set firewall.@defaults[0].input='REJECT'
+		set firewall.@defaults[0].output='ACCEPT'
+		set firewall.@defaults[0].forward='REJECT'
+		set firewall.@defaults[0].drop_invalid='1'
+		set firewall.@defaults[0].family='ipv4'
+		set firewall.$zlan.name='lan'
+		set firewall.$zlan.network='lan'
+		set firewall.$zlan.input='ACCEPT'
+		set firewall.$zlan.output='ACCEPT'
+		set firewall.$zlan.forward='ACCEPT'
+		set firewall.$zwan.name='wan'
+		delete firewall.$zwan.network
+		add_list firewall.$zwan.network='wan'
+		add_list firewall.$zwan.network='wan2'
+		set firewall.$zwan.input='REJECT'
+		set firewall.$zwan.output='ACCEPT'
+		set firewall.$zwan.forward='REJECT'
+		set firewall.$zwan.masq='1'
+		set firewall.$zwan.mtu_fix='1'
+UCI
+
+	# LAN -> wan 放行：按 src/dest 反查，别用固定 @forwarding[0]
+	local fwd
+	fwd="$(uci -q show firewall | sed -n "s/^firewall\.\(@forwarding\[[0-9]\+\]\)\.src='lan'$/\1/p" | head -1)"
+	[ -z "$fwd" ] && fwd="@forwarding[0]"
+	uci batch <<-UCI 2>/dev/null || warn "uci batch 部分条目失败（可忽略）"
+		set firewall.$fwd.src='lan'
+		set firewall.$fwd.dest='wan'
+	UCI
+
+	# ---- SSH：允许 root 密码登录（首次装机需要）----
+	uci batch <<-'UCI' 2>/dev/null || warn "uci batch 部分条目失败（可忽略）"
+		set dropbear.@dropbear[0].PasswordAuth='on'
+		set dropbear.@dropbear[0].RootPasswordAuth='on'
+		set dropbear.@dropbear[0].Port='22'
+	UCI
+
+	# ---- 系统：主机名 / 时区 / NTP ----
+	uci batch <<-'UCI' 2>/dev/null || warn "uci batch 部分条目失败（可忽略）"
+		set system.@system[0].hostname='Tenda-BE12-Pro'
+		set system.@system[0].timezone='CST-8'
+		set system.@system[0].zonename='Asia/Shanghai'
+		set system.@system[0].log_size='64'
+		set system.@system[0].urandom_seed='0'
+		set system.ntp=timeserver
+		set system.ntp.enabled='1'
+		set system.ntp.enable_server='0'
+	UCI
+
+	uci commit dhcp
+	uci commit firewall
+	uci commit dropbear
+	uci commit system
+	uci commit
+
+	# ---- 结果回读确认 ----
+	local ok=0
+	[ "$(uci -q get dhcp.lan.start)"   = "100" ]   && ok=$((ok+1))
+	[ "$(uci -q get dhcp.lan.limit)"   = "100" ]   && ok=$((ok+1))
+	# ⚠️ 这里也必须用动态查到的 $zwan，不能写死 @zone[2]
+	uci -q get "firewall.$zwan.network" | grep -q wan2 && ok=$((ok+1))
+	[ "$(uci -q get system.@system[0].timezone)" = "CST-8" ] && ok=$((ok+1))
+	if [ "$ok" -eq 4 ]; then
+		log "DHCP / 防火墙 / SSH / 系统配置已写入（4/4 项确认）"
+	else
+		warn "配置写入只确认了 $ok/4 项，请进 LuCI 复核"
+	fi
+}
+
+# -----------------------------------------------------------------------------
+# 3. LAN 地址确认
 #    预置配置已写入 192.168.100.254，这里做一次兜底校验
 # -----------------------------------------------------------------------------
 ensure_lan() {
@@ -55,7 +172,7 @@ ensure_lan() {
 }
 
 # -----------------------------------------------------------------------------
-# 3. 接口规划校验
+# 4. 接口规划校验
 #    确保 lan3 未被误加入 LAN 桥（它是 WAN2）
 # -----------------------------------------------------------------------------
 check_interfaces() {
@@ -80,7 +197,7 @@ check_interfaces() {
 }
 
 # -----------------------------------------------------------------------------
-# 4. LuCI 主题注册
+# 5. LuCI 主题注册
 #    把已安装的主题注册到 /etc/config/luci，确保下拉框里能选到
 # -----------------------------------------------------------------------------
 register_themes() {
@@ -112,7 +229,7 @@ register_themes() {
 }
 
 # -----------------------------------------------------------------------------
-# 5. 无线默认关闭
+# 6. 无线默认关闭
 #    安全策略：首次启动不广播 SSID，用户配置后再启用
 # -----------------------------------------------------------------------------
 disable_wifi() {
@@ -123,7 +240,7 @@ disable_wifi() {
 }
 
 # -----------------------------------------------------------------------------
-# 6. 安装 mwan3（原生 nft 移植版）
+# 7. 安装 mwan3（原生 nft 移植版）
 #    ⚠️ 刻意不打进固件镜像 —— 原因见 README §4.3
 #    首次启动尝试联网安装；失败则输出提示，不阻塞启动
 # -----------------------------------------------------------------------------
@@ -140,7 +257,7 @@ try_install_mwan3() {
 }
 
 # -----------------------------------------------------------------------------
-# 7. 硬件信息记录
+# 8. 硬件信息记录
 # -----------------------------------------------------------------------------
 log_hardware() {
 	echo "=== Tenda BE12 Pro 硬件信息 ===" > /etc/tenda-hardware.txt
@@ -170,6 +287,7 @@ log_hardware() {
 log "首次启动配置开始…"
 
 switch_mirror
+apply_base_config
 ensure_lan
 check_interfaces
 register_themes

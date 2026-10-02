@@ -75,10 +75,7 @@ while IFS='|' read -r label path; do
   [ -z "${label:-}" ] && continue
   if [ -e "$R/$path" ]; then ok_ "$label"; else bad_ "$label  ($path)"; fi
 done <<'EOF'
-预置网段 /etc/config/network|/etc/config/network
-预置防火墙 /etc/config/firewall|/etc/config/firewall
-预置 DHCP  /etc/config/dhcp|/etc/config/dhcp
-预置系统   /etc/config/system|/etc/config/system
+预置网段+双WAN /etc/config/network|/etc/config/network
 首次启动脚本 99-tenda-custom|/etc/uci-defaults/99-tenda-custom
 mwan3 安装助手|/usr/lib/tenda/install-mwan3.sh
 bootstrap 主题|/www/luci-static/bootstrap
@@ -113,6 +110,41 @@ if [ -f "$R/etc/uci-defaults/99-tenda-custom" ]; then
   grep -qU $'\r' "$R/etc/uci-defaults/99-tenda-custom" \
     && bad_ "99-tenda-custom 含 CRLF 换行 —— 在设备上会执行失败" \
     || ok_ "99-tenda-custom 换行符正常（LF）"
+
+  # ⚠️ shell 语法检查。这个不能省：
+  #    uci-defaults 里用了 <<-UCI（带横杠才剥 TAB，同时允许 $变量 展开）。
+  #    一旦误写成 <<UCI，结束符必须顶格，而脚本里是缩进的 → 结束符不匹配 →
+  #    shell 一直读到 EOF → "Syntax error: end of file unexpected"，
+  #    整个首次启动配置**静默不执行**，设备起来是半成品。
+  #    这类错误在设备上极难排查，sh -n 一秒就能抓到。
+  if sh -n "$R/etc/uci-defaults/99-tenda-custom" 2>/tmp/shn.err; then
+    ok_ "99-tenda-custom shell 语法正确"
+  else
+    bad_ "99-tenda-custom 存在 shell 语法错误：$(head -1 /tmp/shn.err)"
+  fi
+
+  # 顺带确认 heredoc 结束符写法没踩坑
+  if grep -qE "<<[A-Za-z_]+[^ -]" "$R/etc/uci-defaults/99-tenda-custom" \
+     && grep -q $'^\t\+' <<<"$(grep -nE '<<[A-Za-z_]+' "$R/etc/uci-defaults/99-tenda-custom" | head -1)"; then
+    warn "  提示：存在 <<WORD（不带 -）且内容有缩进，确认结束符是顶格的"
+  fi
+
+  # ---- 预置内容（uci batch）必须真的写进去了 ----
+  # dhcp / firewall / dropbear / system 改由这个脚本在首次开机时下发，
+  # 所以检查点从「文件是否存在」变成了「脚本里有没有对应的 uci 语句」。
+  while IFS='|' read -r what needle; do
+    [ -z "${what:-}" ] && continue
+    grep -qF -- "$needle" "$R/etc/uci-defaults/99-tenda-custom" \
+      && ok_ "预置 $what" \
+      || bad_ "预置 $what 缺失（uci batch 里找不到: $needle）"
+  done <<'EOF'
+DHCP 池起点 .100|set dhcp.lan.start='100'
+DHCP 池数量 100|set dhcp.lan.limit='100'
+防火墙 wan 区挂 wan2|network='wan2'
+防火墙 lan 区放行|input='ACCEPT'
+时区 CST-8|set system.@system[0].timezone='CST-8'
+主机名 Tenda-BE12-Pro|set system.@system[0].hostname='Tenda-BE12-Pro'
+EOF
 fi
 
 # ---- 5. 必须不存在的包 -----------------------------------------------------
