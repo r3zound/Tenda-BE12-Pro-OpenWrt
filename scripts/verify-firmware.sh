@@ -56,12 +56,48 @@ ROOTFS="$(find "$TMPD" -type f -name root 2>/dev/null | head -1)"
   exit 2
 }
 
-"$USQ" -f -d "$TMPD/rootfs" "$ROOTFS" >/dev/null 2>&1 || {
-  echo "${RED}❌ unsquashfs 解包失败${RST}"
+# ---- 3. 解包 squashfs ------------------------------------------------------
+# ⚠️⚠️ 不要用 unsquashfs 的退出码判断成败。
+#    实测（Run #13）：解包完全成功、产物齐全（1411 个文件 / 40MB），
+#    但 unsquashfs 仍然返回非 0 —— 它把末尾的告警也计进退出码。
+#    早期版本这里写 `|| { echo 解包失败; exit 2; }`，于是明明解包成功
+#    却被判为失败，整个构建白跑。
+#    正确判据是**产物本身**：目录建出来了没有、文件数够不够。
+#
+extract_ok() {
+	local dst="$1" tool="$2" n
+	rm -rf "$dst"
+	"$tool" -f -d "$dst" "$ROOTFS" >/dev/null 2>&1 || true
+	[ -d "$dst" ] || return 1
+	n="$(find "$dst" -type f 2>/dev/null | wc -l)"
+	[ "$n" -ge 50 ] || return 1
+	# 再抽查一个标志性文件，避免解出一堆空壳
+	[ -e "$dst/etc/uci-defaults" ] || [ -e "$dst/usr/lib" ] || return 1
+	return 0
+}
+
+DST="$TMPD/rootfs"
+if ! extract_ok "$DST" "$USQ"; then
+  echo "  ${YEL}⚠️  $USQ 解包结果不可用，尝试从源码编译一个完整的 unsquashfs${RST}"
+  rm -rf "$DST"
+  # 强制走源码编译路径
+  if ( source "$ROOT/scripts/lib/ensure-unsquashfs.sh" && _ensure --build ) >/tmp/usq2.txt 2>/dev/null; then
+    USQ2="$(tail -1 /tmp/usq2.txt)"
+    if [ -n "$USQ2" ] && extract_ok "$DST" "$USQ2"; then
+      USQ="$USQ2"
+      echo "  ${GRN}✓${RST} 改用 $USQ"
+    fi
+  fi
+fi
+
+if [ ! -d "$DST" ] || [ "$(find "$DST" -type f 2>/dev/null | wc -l)" -lt 50 ]; then
+  echo "${RED}❌ 无法解开 squashfs${RST}"
+  echo "   unsquashfs: $USQ"
   "$USQ" -s "$ROOTFS" 2>&1 | head -20
   exit 2
-}
-R="$TMPD/rootfs"
+fi
+
+R="$DST"
 echo "  解包完成: $(find "$R" -type f | wc -l) 个文件，$(du -sm --apparent-size "$R" | cut -f1) MB"
 echo
 

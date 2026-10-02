@@ -19,30 +19,41 @@
 # =============================================================================
 
 _ensure() {
-  if command -v unsquashfs >/dev/null 2>&1; then
-    command -v unsquashfs
-    return 0
-  fi
+  # --build：跳过「PATH 里已有」「包管理器安装」两步，直接源码编译。
+  #          用于 PATH 里那个 unsquashfs 明明存在却解不开目标镜像的情况
+  #          （发行版打包的 squashfs-tools 有时缺 XZ_SUPPORT）。
+  local force_build=0
+  [ "${1:-}" = "--build" ] && force_build=1
 
-  echo "  unsquashfs 不在 PATH，尝试安装 …" >&2
+  if [ "$force_build" -eq 0 ]; then
+    if command -v unsquashfs >/dev/null 2>&1; then
+      command -v unsquashfs
+      return 0
+    fi
 
-  if command -v apt-get >/dev/null 2>&1; then
-    (apt-get install -y squashfs-tools >&2 2>&1) \
-      || (apt-get update -qq >&2 && apt-get install -y squashfs-tools >&2 2>&1) || true
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y squashfs-tools >&2 2>&1 || true
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y squashfs-tools >&2 2>&1 || true
-  elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache squashfs-tools >&2 2>&1 || true
-  fi
+    echo "  unsquashfs 不在 PATH，尝试安装 …" >&2
 
-  if command -v unsquashfs >/dev/null 2>&1; then
-    command -v unsquashfs
-    return 0
+    if command -v apt-get >/dev/null 2>&1; then
+      (apt-get install -y squashfs-tools >&2 2>&1) \
+        || (apt-get update -qq >&2 && apt-get install -y squashfs-tools >&2 2>&1) || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y squashfs-tools >&2 2>&1 || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y squashfs-tools >&2 2>&1 || true
+    elif command -v apk >/dev/null 2>&1; then
+      apk add --no-cache squashfs-tools >&2 2>&1 || true
+    fi
+
+    if command -v unsquashfs >/dev/null 2>&1; then
+      command -v unsquashfs
+      return 0
+    fi
   fi
 
   # ---- 源码编译兜底 --------------------------------------------------------
+  # 必须显式带 XZ_SUPPORT=1：它是 **make 变量**而不是预处理宏。
+  # 写成 CFLAGS="-DXZ_SUPPORT" 会编译出「认得出 superblock 但解不开 xz」
+  # 的半残版本 —— 这种最坑，因为 -s 看着一切正常。
   command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1 || {
     echo "  ❌ 没有 gcc/cc，无法源码编译" >&2
     return 1
@@ -54,7 +65,7 @@ _ensure() {
 
   local tmp
   tmp="$(mktemp -d)"
-  echo "  从源码编译 squashfs-tools …" >&2
+  echo "  从源码编译 squashfs-tools（带 XZ_SUPPORT）…" >&2
 
   if curl -sL --max-time 180 \
       "https://github.com/plougher/squashfs-tools/archive/refs/tags/4.6.1.tar.gz" \
@@ -62,7 +73,7 @@ _ensure() {
     tar xzf "$tmp/sq.tgz" -C "$tmp" 2>/dev/null
     local d
     d="$(find "$tmp" -maxdepth 2 -name squashfs-tools -type d | head -1)"
-    if [ -n "$d" ] && (cd "$d" && make unsquashfs XZ_SUPPORT=1 >&2 2>&1); then
+    if [ -n "$d" ] && (cd "$d" && make unsquashfs XZ_SUPPORT=1 >&2 2>&1) && [ -x "$d/unsquashfs" ]; then
       echo "$d/unsquashfs"
       return 0
     fi

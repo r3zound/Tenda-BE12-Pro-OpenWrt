@@ -96,12 +96,28 @@ SQFS_MB=$(( $(stat -c%s "$ROOTFS") / 1048576 ))
 SQFS_KB=$(( $(stat -c%s "$ROOTFS") / 1024 ))
 
 # ---- 4. 展开体积（参考值）--------------------------------------------------
+# ⚠️ 不要用 unsquashfs 的退出码判断成败（Run #13 实测：解包成功但退出码非 0）。
+#    判据是产物：目录建出来了、文件数够不够。
+# ⚠️ 也不要像早期那样 `|| true` 之后还继续报"通过" —— 那会让体积守卫
+#    在完全没测到的情况下显示绿色，等于形同虚设。测不到就明确报出来。
+rm -rf "$TMPD/rootfs"
 "$USQ" -f -d "$TMPD/rootfs" "$ROOTFS" >/dev/null 2>&1 || true
+
 APP_MB="—"
 NFILE="—"
 if [ -d "$TMPD/rootfs" ]; then
-  APP_MB=$(du -sm --apparent-size "$TMPD/rootfs" 2>/dev/null | cut -f1)
   NFILE=$(find "$TMPD/rootfs" -type f 2>/dev/null | wc -l)
+  if [ "$NFILE" -ge 50 ]; then
+    APP_MB=$(du -sm --apparent-size "$TMPD/rootfs" 2>/dev/null | cut -f1)
+  fi
+fi
+
+if [ "$NFILE" -lt 50 ] 2>/dev/null; then
+  echo "  ${RED}❌ rootfs 解包失败（只解出 ${NFILE} 个文件），无法核算展开体积${RST}"
+  echo "     rootfs 占用仍可测（$(stat -c%s "$ROOTFS") 字节），但展开体积未知。"
+  echo "     体积守卫判定为**不可信**，请检查 unsquashfs 是否支持 xz："
+  echo "       $USQ"
+  exit 2
 fi
 
 # ---- 5. 输出与判定 ---------------------------------------------------------

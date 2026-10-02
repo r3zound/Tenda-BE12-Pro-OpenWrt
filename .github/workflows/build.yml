@@ -270,6 +270,11 @@ jobs:
 
       # ---------------------------------------------------------------------
       - name: 上传固件产物
+        # ⚠️ 必须 if: always()。
+        #    之前校验类步骤一失败就跳过上传，导致「固件有问题但拿不到固件」，
+        #    只能靠 69MB 的日志反推（还经常被下载截断）。失败时也上传，
+        #    本地拿到就能随便验。
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tenda_be12-pro-${{ inputs.variant || 'main' }}-${{ github.run_number }}
