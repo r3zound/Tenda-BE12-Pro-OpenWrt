@@ -290,6 +290,14 @@ OpenWrt 25.12 起默认包管理器已从 `opkg` 切换为 **`apk`**（Alpine �
 > ⚠️ **切换主题需谨慎**：若 `/etc/config/luci` 中 `mediaurlbase` 指向未打包的主题，
 > LuCI 会白屏。首次部署默认使用 Bootstrap，确认各主题可用后再切换。
 
+> 📌 **`luci-theme-edge` 已移除**：唯一能找到的源是 `zhucemax/openwrt-packages`，
+> 那是个含数百个包的大杂烩仓库（openclash / ssr-plus / vssr / xray-core /
+> v2ray-geodata / wrtbwmon …）。`feeds install -a` 会全量引入，后果有三：
+> ① 撑爆 90MB rootfs；② 其自带的 2019 版 `luci-theme-argon` 与本仓库的
+> 2.4.7 **同名冲突**；③ `wrtbwmon` 触发 kconfig 递归依赖错误。
+> 且该主题本身是 2021 年包，现代 LuCI 下大概率不渲染。
+> **如需恢复，请提供独立干净源的仓库地址。**
+
 ### 4.3 多 WAN / 负载均衡 — ⚠️ 重要设计决策
 
 #### 为什么不把 mwan3 编译进固件
@@ -443,10 +451,12 @@ iperf3 -c <对端IP> -t 60 -P 4        # 同时 top 看 mt7996e / CPU 占用
 | `luci-i18n-base-zh-cn` | 官方 luci | — | 简体中文 |
 | `luci-theme-argon` | 第三方 | v2.4.7 | 活跃维护，已适配 apk |
 | `luci-theme-aurora` | 第三方 | v1.4.0 | Vite + Tailwind，Apache-2.0 |
-| `luci-theme-edge` | 第三方聚合仓 | v2.5 (2021) | ⚠️ 包较旧，渲染异常时改用 argon/aurora |
+| `luci-theme-edge` | ❌ **已移除** | — | 唯一可用的源是数百包的大杂烩仓库，见 §4.2 脚注 |
+| `luci-app-argon-config` | `jerrykuku/luci-app-argon-config` | — | argon 配色配置界面 |
 | `luci-theme-bootstrap` | 官方 luci | — | 默认主题，最稳 |
 
 > 📌 **PassWall 已按需求移除**（体积超限，详见 §4.6）。如需恢复见该节。
+> 📌 **luci-theme-edge 已移除**，见 §4.2 脚注。当前三个主题：bootstrap（默认）/ argon / aurora。
 > 📌 `frp` 需要 Go 工具链，构建时间会明显拉长，CI 已按 360 分钟超时配置。
 
 ### 4.6 预留：PassWall 恢复方案（当前未启用）
@@ -961,7 +971,6 @@ dd if=/dev/mtd1 of=/tmp/u-boot-env.bin bs=64k count=8
 | luci-app-frpc | MIT |
 | luci-theme-aurora | Apache-2.0 |
 | luci-theme-argon | Apache-2.0 |
-| luci-theme-edge | Apache-2.0 |
 | mwan3 (nft port，刷机后安装) | GPL-2.0 |
 
 > 固件二进制产物**不随本仓库分发**，请自行编译或从 Actions Artifacts 获取。

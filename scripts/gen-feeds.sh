@@ -43,8 +43,7 @@ PACKAGES_COMMIT=$(get PACKAGES_COMMIT)
 
 N_ARGON=$(get FEED_NAME_THEME_ARGON);      ARGON_REPO=$(get THEME_ARGON_REPO);   ARGON_COMMIT=$(get THEME_ARGON_COMMIT)
 N_AURORA=$(get FEED_NAME_THEME_AURORA);    AURORA_REPO=$(get THEME_AURORA_REPO); AURORA_COMMIT=$(get THEME_AURORA_COMMIT)
-N_EDGE=$(get FEED_NAME_THEME_EDGE);        EDGE_REPO=$(get THEME_EDGE_REPO);     EDGE_COMMIT=$(get THEME_EDGE_COMMIT)
-EDGE_BRANCH=$(get THEME_EDGE_BRANCH)
+N_ARGONCFG=$(get FEED_NAME_ARGON_CFG);    ARGFG_REPO=$(get ARGON_CFG_REPO);   ARGFG_COMMIT=$(get ARGON_CFG_COMMIT)
 N_FRP=$(get FEED_NAME_FRP_LUCI);            FRP_REPO=$(get FRP_LUCI_REPO);       FRP_COMMIT=$(get FRP_LUCI_COMMIT)
 
 # ---- 铁律校验：feed 名合法性 + SHA 格式 ------------------------------------
@@ -75,7 +74,7 @@ validate_feed_name "luci"           "LUCI_REPO"             || FAIL=1
 validate_feed_name "packages"       "PACKAGES_REPO"         || FAIL=1
 validate_feed_name "$N_ARGON"       "FEED_NAME_THEME_ARGON"  || FAIL=1
 validate_feed_name "$N_AURORA"      "FEED_NAME_THEME_AURORA" || FAIL=1
-validate_feed_name "$N_EDGE"        "FEED_NAME_THEME_EDGE"   || FAIL=1
+validate_feed_name "$N_ARGONCFG"   "FEED_NAME_ARGON_CFG"    || FAIL=1
 validate_feed_name "$N_FRP"         "FEED_NAME_FRP_LUCI"     || FAIL=1
 echo
 validate_sha "$OPENWRT_COMMIT"  "openwrt"       || true
@@ -83,7 +82,6 @@ validate_sha "$LUCI_COMMIT"     "luci"          || true
 validate_sha "$PACKAGES_COMMIT" "packages"      || true
 validate_sha "$ARGON_COMMIT"    "argon"         || true
 validate_sha "$AURORA_COMMIT"   "aurora"        || true
-validate_sha "$EDGE_COMMIT"     "edge"          || true
 validate_sha "$FRP_COMMIT"      "luci-app-frpc" || true
 
 [ "$FAIL" -eq 0 ] || die "feeds.conf 校验未通过，已中止（修复 versions.lock 后重试）"
@@ -127,8 +125,7 @@ src-git packages $PACKAGES_REPO^$PACKAGES_COMMIT
 # ---- LuCI 主题（第三方，官方主线不含）-------------------------------------
 src-git $N_ARGON $ARGON_REPO^$ARGON_COMMIT
 src-git $N_AURORA $AURORA_REPO^$AURORA_COMMIT
-# edge 主题取自聚合仓库；该包较旧（2021），若渲染异常见 README §4.5
-src-git $N_EDGE $EDGE_REPO^$EDGE_COMMIT
+src-git $N_ARGONCFG $ARGFG_REPO^$ARGFG_COMMIT
 
 # ---- 应用 -----------------------------------------------------------------
 src-git $N_FRP $FRP_REPO^$FRP_COMMIT
@@ -140,6 +137,10 @@ src-git $N_FRP $FRP_REPO^$FRP_COMMIT
 # passwall —— 已按需求移除（体积超限）。见 README §4.6。
 # base-files —— 不是独立 feed，就在 openwrt 主仓 package/base-files 内。
 #            官方 feeds.conf.default 中亦无此项，勿加。
+# luci-theme-edge —— 已移除。唯一可用的源 zhucemax/openwrt-packages 是含数百个
+#            包的大杂烩仓库（openclash/ssr-plus/xray-core/v2ray-geodata…），
+#            全量安装会撑爆 rootfs，且其自带的 2019 版 luci-theme-argon 会与
+#            本仓库的 2.4.7 冲突。详见 versions.lock 注释。
 EOF
 
 # ---- 语法校验：忠实复刻 OpenWrt scripts/feeds 的解析语义 -------------------

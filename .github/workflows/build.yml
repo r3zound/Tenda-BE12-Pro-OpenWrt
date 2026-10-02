@@ -114,12 +114,13 @@ jobs:
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a -p luci
-          # ⚠️ feed 名必须与 versions.lock 的 FEED_NAME_* 一致（下划线，非连字符）
-          ./scripts/feeds install -a -p luci_theme_argon  || echo "⚠️ argon 缺失"
-          ./scripts/feeds install -a -p luci_theme_aurora || echo "⚠️ aurora 缺失"
-          ./scripts/feeds install -a -p luci_theme_edge   || echo "⚠️ edge 缺失"
-          ./scripts/feeds install -a -p luci_app_frpc     || echo "⚠️ frpc UI 缺失"
-          ./scripts/feeds install -a -p frp
+          # ⚠️ 第三方 feed 用**精确包名**安装，绝不用 `-a`
+          #    （大杂烩仓库全量安装会撑爆 90MB rootfs）
+          ./scripts/feeds install luci_theme_argon/luci-theme-argon            || echo "::warning::argon 缺失"
+          ./scripts/feeds install luci_app_argon_config/luci-app-argon-config || echo "::warning::argon 配置界面缺失"
+          ./scripts/feeds install luci_theme_aurora/luci-theme-aurora         || echo "::warning::aurora 缺失"
+          ./scripts/feeds install luci_app_frpc/luci-app-frpc                 || echo "::warning::frpc UI 缺失"
+          ./scripts/feeds install frp/frpc
 
       # ---------------------------------------------------------------------
       - name: 生成 .config
