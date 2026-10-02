@@ -113,14 +113,22 @@ jobs:
         working-directory: openwrt
         run: |
           ./scripts/feeds update -a
-          ./scripts/feeds install -a -p luci
-          # ⚠️ 第三方 feed 用**精确包名**安装，绝不用 `-a`
-          #    （大杂烩仓库全量安装会撑爆 90MB rootfs）
-          ./scripts/feeds install luci_theme_argon/luci-theme-argon            || echo "::warning::argon 缺失"
-          ./scripts/feeds install luci_app_argon_config/luci-app-argon-config || echo "::warning::argon 配置界面缺失"
-          ./scripts/feeds install luci_theme_aurora/luci-theme-aurora         || echo "::warning::aurora 缺失"
-          ./scripts/feeds install luci_app_frpc/luci-app-frpc                 || echo "::warning::frpc UI 缺失"
+          # frpc / luci-app-frpc 都用官方包（packages / luci feed 自带）
           ./scripts/feeds install frp/frpc
+          # argon / aurora 主题由下一步挂到 package/，不走 feeds
+
+      # ---------------------------------------------------------------------
+      - name: 挂载第三方包到 package/
+        run: |
+          # ⚠️ 关键：这些仓库的 Makefile 在**根目录**，而 include/scan.mk 用
+          #    `find -L feeds/<名字> -mindepth 1 -name Makefile` 扫描，
+          #    根目录被排除 → feeds 静默索引不到 → .config 里没有符号 →
+          #    编译全绿但固件里没有主题。Run #5 就踩了这个坑。
+          #    绕开 feeds，直接 clone 到 package/（depth 1 正好能被扫到）。
+          ./scripts/fetch-extra-packages.sh "$OPENWRT_SRC"
+          echo "──── package/ 下的第三方包 ────"
+          ls -1 "$OPENWRT_SRC/package" | grep -vE '^(feeds|README|index|config)' || true
+          cat "$OPENWRT_SRC/package/.extra-packages"
 
       # ---------------------------------------------------------------------
       - name: 生成 .config
@@ -129,6 +137,34 @@ jobs:
           echo "──── .config 摘要 ────"
           grep -E '^CONFIG_(TARGET_mediatek|PACKAGE_luci-theme|PACKAGE_frpc|LUCI_LANG)' \
             openwrt/.config | sort
+
+      # ---------------------------------------------------------------------
+      - name: 校验关键包已进 .config
+        run: |
+          # ⚠️ 必须在 make 之前拦住「符号压根不存在」的情况 ——
+          #    kconfig 对未知符号既不报错也不警告，编译会一路绿灯通过，
+          #    直到刷机后才发现主题不见了。
+          cd "$OPENWRT_SRC"
+          FAIL=0
+          for p in luci-theme-bootstrap luci-theme-argon luci-theme-aurora \
+                   luci-app-argon-config luci-app-frpc frpc; do
+            if grep -qE "^CONFIG_PACKAGE_${p}=y" .config; then
+              echo "  ✅ $p"
+            else
+              echo "  ❌ $p 未进入 .config（包没被发现，或 base.config 漏配）"
+              FAIL=1
+            fi
+          done
+          for p in mwan3 passwall sing-box xray; do
+            if grep -qE "^CONFIG_PACKAGE_${p}=y" .config; then
+              echo "  ❌ $p 不该在镜像里，却进了 .config"
+              FAIL=1
+            else
+              echo "  ✅ $p 已排除"
+            fi
+          done
+          [ "$FAIL" -eq 0 ] || { echo "::error::关键包校验未通过"; exit 1; }
+          echo "✅ 关键包校验通过"
 
       # ---------------------------------------------------------------------
       - name: 下载源码

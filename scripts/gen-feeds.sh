@@ -41,10 +41,9 @@ LUCI_COMMIT=$(get LUCI_COMMIT)
 PACKAGES_REPO=$(get PACKAGES_REPO)
 PACKAGES_COMMIT=$(get PACKAGES_COMMIT)
 
-N_ARGON=$(get FEED_NAME_THEME_ARGON);      ARGON_REPO=$(get THEME_ARGON_REPO);   ARGON_COMMIT=$(get THEME_ARGON_COMMIT)
-N_AURORA=$(get FEED_NAME_THEME_AURORA);    AURORA_REPO=$(get THEME_AURORA_REPO); AURORA_COMMIT=$(get THEME_AURORA_COMMIT)
-N_ARGONCFG=$(get FEED_NAME_ARGON_CFG);    ARGFG_REPO=$(get ARGON_CFG_REPO);   ARGFG_COMMIT=$(get ARGON_CFG_COMMIT)
-N_FRP=$(get FEED_NAME_FRP_LUCI);            FRP_REPO=$(get FRP_LUCI_REPO);       FRP_COMMIT=$(get FRP_LUCI_COMMIT)
+N_ARGON=$(get PKG_NAME_THEME_ARGON);      ARGON_REPO=$(get THEME_ARGON_REPO);   ARGON_COMMIT=$(get THEME_ARGON_COMMIT)
+N_AURORA=$(get PKG_NAME_THEME_AURORA);    AURORA_REPO=$(get THEME_AURORA_REPO); AURORA_COMMIT=$(get THEME_AURORA_COMMIT)
+N_ARGONCFG=$(get PKG_NAME_ARGON_CFG);    ARGFG_REPO=$(get ARGON_CFG_REPO);   ARGFG_COMMIT=$(get ARGON_CFG_COMMIT)
 
 # ---- 铁律校验：feed 名合法性 + SHA 格式 ------------------------------------
 echo "${CYN}▸ 校验 feed 名与 commit${RST}"
@@ -72,17 +71,13 @@ validate_sha() {
 FAIL=0
 validate_feed_name "luci"           "LUCI_REPO"             || FAIL=1
 validate_feed_name "packages"       "PACKAGES_REPO"         || FAIL=1
-validate_feed_name "$N_ARGON"       "FEED_NAME_THEME_ARGON"  || FAIL=1
-validate_feed_name "$N_AURORA"      "FEED_NAME_THEME_AURORA" || FAIL=1
-validate_feed_name "$N_ARGONCFG"   "FEED_NAME_ARGON_CFG"    || FAIL=1
-validate_feed_name "$N_FRP"         "FEED_NAME_FRP_LUCI"     || FAIL=1
 echo
 validate_sha "$OPENWRT_COMMIT"  "openwrt"       || true
 validate_sha "$LUCI_COMMIT"     "luci"          || true
 validate_sha "$PACKAGES_COMMIT" "packages"      || true
 validate_sha "$ARGON_COMMIT"    "argon"         || true
 validate_sha "$AURORA_COMMIT"   "aurora"        || true
-validate_sha "$FRP_COMMIT"      "luci-app-frpc" || true
+validate_sha "$ARGFG_COMMIT"    "argon-config"  || true
 
 [ "$FAIL" -eq 0 ] || die "feeds.conf 校验未通过，已中止（修复 versions.lock 后重试）"
 
@@ -119,16 +114,12 @@ cat > feeds.conf <<EOF
 # ============================================================================
 
 # ---- 官方 feeds（锁定 commit）---------------------------------------------
+# ⚠️ 这里**只有官方两个 feed**。所有第三方包都不走 feeds —— 因为它们
+#    的 Makefile 在仓库根目录，而 include/scan.mk 的 `find -mindepth 1`
+#    会把根目录排除掉，feeds 永远索引不到（静默失败，不报错）。
+#    第三方包统一由 scripts/fetch-extra-packages.sh 挂到 package/ 下。
 src-git luci $LUCI_REPO^$LUCI_COMMIT
 src-git packages $PACKAGES_REPO^$PACKAGES_COMMIT
-
-# ---- LuCI 主题（第三方，官方主线不含）-------------------------------------
-src-git $N_ARGON $ARGON_REPO^$ARGON_COMMIT
-src-git $N_AURORA $AURORA_REPO^$AURORA_COMMIT
-src-git $N_ARGONCFG $ARGFG_REPO^$ARGFG_COMMIT
-
-# ---- 应用 -----------------------------------------------------------------
-src-git $N_FRP $FRP_REPO^$FRP_COMMIT
 
 # ---- 刻意不引入 -----------------------------------------------------------
 # mwan3   —— 见 README §4.3。官方 mwan3 是 iptables 实现，在 fw4/nftables 上
@@ -141,6 +132,14 @@ src-git $N_FRP $FRP_REPO^$FRP_COMMIT
 #            包的大杂烩仓库（openclash/ssr-plus/xray-core/v2ray-geodata…），
 #            全量安装会撑爆 rootfs，且其自带的 2019 版 luci-theme-argon 会与
 #            本仓库的 2.4.7 冲突。详见 versions.lock 注释。
+# kuoruan/luci-app-frpc —— 已移除。官方 luci feed 自带 luci-app-frpc，
+#            官方 packages feed 自带 frpc，且前者已声明 +frpc 依赖。
+#            Run #5 日志证实实际生效的就是官方版本。
+#
+# ---- 非 feed 的额外包（scripts/fetch-extra-packages.sh 负责）--------------
+#   $N_ARGON      $ARGON_REPO^$ARGON_COMMIT
+#   $N_ARGONCFG   $ARGFG_REPO^$ARGFG_COMMIT
+#   $N_AURORA     $AURORA_REPO^$AURORA_COMMIT
 EOF
 
 # ---- 语法校验：忠实复刻 OpenWrt scripts/feeds 的解析语义 -------------------

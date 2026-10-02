@@ -447,10 +447,10 @@ iperf3 -c <对端IP> -t 60 -P 4        # 同时 top 看 mt7996e / CPU 占用
 | 组件 | 来源 | 版本 | 说明 |
 |------|------|------|------|
 | `frpc` | **openwrt/packages 官方包** | v0.71.0 | 内网穿透客户端，Go 源码编译 |
-| `luci-app-frpc` | `kuoruan/luci-app-frpc` | v1.2.1 | LuCI 界面（官方 `luci-app-frp` 仓库已 404 下线） |
+| `luci-app-frpc` | **openwrt/luci 官方包** | — | 完整 LuCI 应用（htdocs/po/root 齐全），已声明 `+frpc` 依赖 |
 | `luci-i18n-base-zh-cn` | 官方 luci | — | 简体中文 |
-| `luci-theme-argon` | 第三方 | v2.4.7 | 活跃维护，已适配 apk |
-| `luci-theme-aurora` | 第三方 | v1.4.0 | Vite + Tailwind，Apache-2.0 |
+| `luci-theme-argon` | `jerrykuku/luci-theme-argon` | v2.4.7 | 活跃维护，已适配 apk |
+| `luci-theme-aurora` | `eamonxg/luci-theme-aurora` | v1.4.0 | Vite + Tailwind，Apache-2.0 |
 | `luci-theme-edge` | ❌ **已移除** | — | 唯一可用的源是数百包的大杂烩仓库，见 §4.2 脚注 |
 | `luci-app-argon-config` | `jerrykuku/luci-app-argon-config` | — | argon 配色配置界面 |
 | `luci-theme-bootstrap` | 官方 luci | — | 默认主题，最稳 |
@@ -458,6 +458,64 @@ iperf3 -c <对端IP> -t 60 -P 4        # 同时 top 看 mt7996e / CPU 占用
 > 📌 **PassWall 已按需求移除**（体积超限，详见 §4.6）。如需恢复见该节。
 > 📌 **luci-theme-edge 已移除**，见 §4.2 脚注。当前三个主题：bootstrap（默认）/ argon / aurora。
 > 📌 `frp` 需要 Go 工具链，构建时间会明显拉长，CI 已按 360 分钟超时配置。
+> 📌 **argon / aurora 两个主题不走 feeds**，由 `scripts/fetch-extra-packages.sh`
+>    直接挂到 `package/` 目录。原因见 §4.7，这是一个非常隐蔽的坑。
+
+### 4.7 ⚠️ 踩过的坑：feeds 静默装不进「根 Makefile」仓库
+
+这是本项目最隐蔽的一个坑，值得单独写一节——**它不会让构建失败，只会让固件悄悄少东西。**
+
+OpenWrt 扫描 feed 内包的方式在 `include/scan.mk`：
+
+```make
+find -L $(SCAN_DIR) -mindepth 1 -maxdepth $(SCAN_DEPTH) -name Makefile | ...
+                      ^^^^^^^^^^^^^
+```
+
+`-mindepth 1` 意味着**从子目录开始找，feed 根目录本身被排除**。
+而 `jerrykuku/luci-theme-argon`、`eamonxg/luci-theme-aurora` 这类
+**单包仓库的 `Makefile` 恰好就在根目录**。于是发生了这样一条静默失败链：
+
+| 步骤 | 现象 |
+|------|------|
+| `feeds update -a` | ✅ 成功，仓库正常 clone |
+| `feeds install luci_theme_argon/luci-theme-argon` | ✅ **退出码 0，无任何输出** |
+| 索引生成 | 0 个包（官方 luci 173 个、packages 1452 个，第三方全 0） |
+| `make defconfig` | ✅ 成功，`CONFIG_PACKAGE_luci-theme-argon` **符号压根不存在** |
+| `make` | ✅ 全绿，85 分钟编译一次成功 |
+| 刷机后 | **主题列表里没有 argon，也没有 aurora** |
+
+kconfig 对未知符号既不报错也不警告，`feeds install` 对找不到的包也返回 0。
+所以链路上**没有任何一个环节会失败**。
+
+> 📌 这件事真的发生过：CI Run #5 全绿、体积守卫也过，事后翻 `config.buildinfo`
+> 里的 `.config` 才发现三个包一个都没进去。frpc 当时看起来正常，纯属巧合——
+> 官方 luci feed 自带 `luci-app-frpc`，官方 packages feed 自带 `frpc`。
+
+**解决办法**（本项目采用）：绕开 feeds，把这类仓库直接 clone 到 `package/`。
+`package/` 的扫描规则是 `SCAN_DIR=package`，`package/<名字>/Makefile` 正好落在
+depth 1，能被正确索引。
+
+```sh
+./scripts/fetch-extra-packages.sh "$OPENWRT_SRC"
+```
+
+该脚本除了 clone，还会在 clone 后**断言 `Makefile` 存在且含 `call BuildPackage`**，
+不满足就直接失败——不会再有静默通过。
+
+**并且 CI 增加了一道前置闸**（`校验关键包已进 .config` 步骤），在 `make` 之前
+逐个检查关键包的符号是否真的存在，缺一个就直接中止，
+**绝不会再白跑一次 80 分钟编译**：
+
+```sh
+for p in luci-theme-bootstrap luci-theme-argon luci-theme-aurora \
+         luci-app-argon-config luci-app-frpc frpc; do
+  grep -qE "^CONFIG_PACKAGE_${p}=y" .config || { echo "❌ $p 缺失"; exit 1; }
+done
+```
+
+> 💡 经验教训：**判断「某个包有没有进固件」，不要看 CI 绿不绿，要看 `.config` 里
+> 有没有那个符号。** 最省事的办法是把 `config.buildinfo` 存进 Artifact 一起交付。
 
 ### 4.6 预留：PassWall 恢复方案（当前未启用）
 
@@ -947,9 +1005,10 @@ dd if=/dev/mtd1 of=/tmp/u-boot-env.bin bs=64k count=8
 - [OpenWrt Wiki — mwan3 (nftables unofficial)](https://openwrt.org/docs/guide-user/network/wan/multiwan/mwan3-nft)
 - [luci-theme-aurora — eamonxg/luci-theme-aurora](https://github.com/eamonxg/luci-theme-aurora)
 - [luci-theme-argon — jerrykuku/luci-theme-argon](https://github.com/jerrykuku/luci-theme-argon)
-- [luci-theme-aurora — eamonxg/luci-theme-aurora](https://github.com/eamonxg/luci-theme-aurora)
-- [luci-app-frpc — kuoruan/luci-app-frpc](https://github.com/kuoruan/luci-app-frpc)
+- [luci-app-argon-config — jerrykuku/luci-app-argon-config](https://github.com/jerrykuku/luci-app-argon-config)
+- [luci-app-frpc（官方 luci feed）— openwrt/luci](https://github.com/openwrt/luci/tree/master/applications/luci-app-frpc)
 - [frp 官方包（openwrt/packages）](https://github.com/openwrt/packages/tree/master/net/frp)
+- [OpenWrt include/scan.mk（`find -mindepth 1` 包扫描逻辑）](https://github.com/openwrt/openwrt/blob/master/include/scan.mk)
 - [OpenWrt Wiki — LuCI Themes](https://openwrt.org/docs/guide-user/luci/luci.themes)
 
 ### 参考项目

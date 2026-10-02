@@ -80,29 +80,47 @@ ok "feeds.conf 就绪（全部锁定 commit）"
 step "拉取 feeds"
 cd "$SRC"
 ./scripts/feeds update -a || die "feeds update 失败"
-./scripts/feeds install -a -p luci \
-  luci luci-base luci-compat luci-mod-admin-full luci-mod-network luci-mod-system \
-  luci-mod-status luci-mod-firewall luci-mod-dhcp luci-app-firewall \
-  luci-app-attendedsysupgrade luci-app-statistics luci-app-package-manager \
-  luci-theme-bootstrap luci-i18n-base-zh-cn || die "luci feed 安装失败"
-
-# ⚠️ 第三方 feed 用**精确包名**安装，绝不用 `-a`。
-#    `-a` 会装入该 feed 里的全部包 —— 大杂烩仓库会瞬间撑爆 90MB rootfs。
-#    feed 名必须与 versions.lock 的 FEED_NAME_* 一致（下划线，非连字符）。
-./scripts/feeds install luci_theme_argon/luci-theme-argon \
-  || warn "luci-theme-argon 安装失败（该主题将缺失）"
-./scripts/feeds install luci_app_argon_config/luci-app-argon-config \
-  || warn "luci-app-argon-config 安装失败（argon 无配置界面）"
-./scripts/feeds install luci_theme_aurora/luci-theme-aurora \
-  || warn "luci-theme-aurora 安装失败（该主题将缺失）"
-./scripts/feeds install luci_app_frpc/luci-app-frpc \
-  || warn "luci-app-frpc 安装失败（FRP 界面将缺失）"
+./scripts/feeds install -a -p luci || die "luci feed 安装失败"
+# frpc / luci-app-frpc 都用官方包
 ./scripts/feeds install frp/frpc || die "官方 frpc 包安装失败"
 ok "feeds 安装完成"
+
+# ---- 2.5 挂载第三方包到 package/ -------------------------------------------
+# ⚠️ argon / aurora 主题**不能**走 feeds：
+#    include/scan.mk 用 `find -L feeds/<名字> -mindepth 1 -name Makefile` 扫描，
+#    而这两个仓库的 Makefile 就在根目录，-mindepth 1 把它排除了 →
+#    feeds install 静默无输出、索引为空、.config 里没有符号 →
+#    编译一路绿灯，固件里就是没有主题。绕开 feeds 直挂 package/。
+step "挂载第三方包"
+"$ROOT/scripts/fetch-extra-packages.sh" "$SRC" || die "第三方包挂载失败"
 
 # ---- 3. 生成 .config -------------------------------------------------------
 step "生成 .config"
 "$ROOT/scripts/gen-config.sh" "$SRC" || die "配置生成失败"
+
+# ---- 3.5 关键包校验 ---------------------------------------------------------
+# kconfig 遇到未知符号既不报错也不警告，所以必须在 make 之前自己拦一道。
+step "校验关键包"
+cd "$SRC"
+CHECK_FAIL=0
+for p in luci-theme-bootstrap luci-theme-argon luci-theme-aurora \
+         luci-app-argon-config luci-app-frpc frpc; do
+  if grep -qE "^CONFIG_PACKAGE_${p}=y" .config; then
+    ok "$p"
+  else
+    warn "$p 未进入 .config —— 包没被发现，或 base.config 漏配"
+    CHECK_FAIL=1
+  fi
+done
+for p in mwan3 passwall sing-box xray; do
+  if grep -qE "^CONFIG_PACKAGE_${p}=y" .config; then
+    warn "$p 不该在镜像里，却进了 .config"
+    CHECK_FAIL=1
+  else
+    ok "$p 已排除"
+  fi
+done
+[ "$CHECK_FAIL" -eq 0 ] || die "关键包校验未通过，已中止（避免白跑一次 80 分钟编译）"
 
 # ---- 4. 注入预置文件 -------------------------------------------------------
 # OpenWrt 通过 CONFIG_TARGET_ROOTFS_INCLUDE_KERNEL + FILES_DIR 注入

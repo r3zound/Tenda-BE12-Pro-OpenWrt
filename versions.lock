@@ -35,30 +35,51 @@ PACKAGES_BRANCH=master
 PACKAGES_COMMIT=88019052fa25d86bfed3106edb3ba3022d8611c1
 
 # ---- LuCI 主题（均非官方主线，需自行引入）---------------------------------
-FEED_NAME_THEME_ARGON=luci_theme_argon
+# ⚠️ 这三个包**不走 feeds**，由 scripts/fetch-extra-packages.sh 直接 clone
+#    到 OpenWrt 的 package/ 目录。
+#
+# 原因：OpenWrt 的 include/scan.mk 用
+#     find -L feeds/<名字> -mindepth 1 ... -name Makefile
+# 扫描包，`-mindepth 1` 排除了 feed 根目录。而这三个仓库的 Makefile
+# 恰好就在根目录（jerrykuku/luci-theme-argon、eamonxg/luci-theme-aurora
+# 都是单包仓库），于是：
+#     feeds install <名字>/<包名>  →  静默无输出、不报错、什么都不做
+#     .config 里没有该包的符号    →  kconfig 不报错，编译全绿
+#     固件里就是没有这个主题     →  事后翻 .config 才发现
+# Run #5 就是这么白跑了一轮。详见 scripts/fetch-extra-packages.sh 头注释。
+#
+# PKG_NAME_* 即 clone 后的目录名，必须与仓库内的包名对得上。
+PKG_NAME_THEME_ARGON=luci-theme-argon
 THEME_ARGON_REPO=https://github.com/jerrykuku/luci-theme-argon.git
 THEME_ARGON_BRANCH=master
 THEME_ARGON_COMMIT=23c3e525578374d6b20f5e7b93d27874cd01a252
 
 # argon 的配置界面（配色等），单独仓库
-FEED_NAME_ARGON_CFG=luci_app_argon_config
+PKG_NAME_ARGON_CFG=luci-app-argon-config
 ARGON_CFG_REPO=https://github.com/jerrykuku/luci-app-argon-config.git
 ARGON_CFG_BRANCH=master
 ARGON_CFG_COMMIT=3e099a37c3f71d0de677f1b6b0f4bffd57d91dac
 
-FEED_NAME_THEME_AURORA=luci_theme_aurora
+PKG_NAME_THEME_AURORA=luci-theme-aurora
 THEME_AURORA_REPO=https://github.com/eamonxg/luci-theme-aurora.git
 THEME_AURORA_BRANCH=master
 THEME_AURORA_COMMIT=84c27b66952e6fc4be60128067a6b88bfd34afb5
 
 
 # ---- 应用 -----------------------------------------------------------------
-# frpc 守护进程：使用 openwrt/packages 官方包（v0.71.0，Go 源码编译）
-#   注意：需要 golang/host 构建依赖，会显著拉长构建时间
-FEED_NAME_FRP_LUCI=luci_app_frpc
-FRP_LUCI_REPO=https://github.com/kuoruan/luci-app-frpc.git
-FRP_LUCI_BRANCH=master
-FRP_LUCI_COMMIT=470b57063ef804899fd823016e0aa052894a0563
+# frpc：全部使用**官方**包，不再引入第三方 feed。
+#
+#   frpc         → openwrt/packages 官方（v0.71.0，Go 源码编译）
+#                   注意：需要 golang host 构建依赖，会显著拉长构建时间
+#   luci-app-frpc → openwrt/luci 官方 applications/luci-app-frpc
+#                   含 htdocs/po/root，是完整 LuCI 应用，
+#                   且其 LUCI_DEPENDS 已声明 "+frpc"
+#
+# 历史上曾用 kuoruan/luci-app-frpc（因为老的 luci-app-frp 仓库已 404），
+# 但那个仓库同样是根 Makefile 结构，走 feeds 装不进来。
+# Run #5 的日志证实 luci-app-frpc 实际来自官方 luci feed，功能不受影响，
+# 故直接移除第三方源，减少一个变量。
+# 锁定版本请看 LUCI_COMMIT / PACKAGES_COMMIT。
 
 # ============================================================================
 # 刻意 NOT 锁定的组件
