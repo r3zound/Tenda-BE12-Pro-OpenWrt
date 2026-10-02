@@ -113,9 +113,20 @@ jobs:
         working-directory: openwrt
         run: |
           ./scripts/feeds update -a
-          # frpc / luci-app-frpc 都用官方包（packages / luci feed 自带）
+          # ⚠️ 绝对不能省这一行。
+          #    -a -p luci 只是把 luci feed 的包**放进 package/feeds/luci/**
+          #    让 kconfig 能看见它们（173 个），并不代表都会进固件 ——
+          #    真正进固件的只有 base.config 里写成 =y 的那些。
+          #    省掉它会导致 luci / luci-base / csstidy / luasrcdiet 全部消失，
+          #    连带 luci-theme-aurora、tenda-preset 报 "dependency does not exist"，
+          #    最后 CONFIG_PACKAGE_luci 和 CONFIG_LUCI_LANG_zh_Hans 双双变没。
+          #    教训：改 feed 安装步骤时，别用 build.sh 对照 —— 两边本来就可能不同步。
+          ./scripts/feeds install -a -p luci
+          # frp / luci-app-frpc 都用官方包（packages / luci feed 自带）
           ./scripts/feeds install frp/frpc
           # argon / aurora 主题由下一步挂到 package/，不走 feeds
+          echo "── luci feed 装了多少包 ──"
+          ls -1 package/feeds/luci 2>/dev/null | wc -l
 
       # ---------------------------------------------------------------------
       - name: 挂载第三方包到 package/
@@ -159,8 +170,9 @@ jobs:
           #    直到刷机后才发现主题不见了。
           cd "$OPENWRT_SRC"
           FAIL=0
-          for p in luci-theme-bootstrap luci-theme-argon luci-theme-aurora \
-                   luci-app-argon-config luci-app-frpc frpc tenda-preset; do
+          for p in luci luci-base luci-theme-bootstrap luci-theme-argon \
+                   luci-theme-aurora luci-app-argon-config luci-app-frpc \
+                   frpc tenda-preset; do
             if grep -qE "^CONFIG_PACKAGE_${p}=y" .config; then
               echo "  ✅ $p"
             else
@@ -168,6 +180,13 @@ jobs:
               FAIL=1
             fi
           done
+          # 语言包是符号名，不叫 CONFIG_PACKAGE_*
+          if grep -qE '^CONFIG_LUCI_LANG_zh_Hans=y' .config; then
+            echo "  ✅ 简体中文"
+          else
+            echo "  ❌ CONFIG_LUCI_LANG_zh_Hans 未启用"
+            FAIL=1
+          fi
           for p in mwan3 passwall sing-box xray; do
             if grep -qE "^CONFIG_PACKAGE_${p}=y" .config; then
               echo "  ❌ $p 不该在镜像里，却进了 .config"

@@ -116,7 +116,7 @@ step "生成 .config"
 step "校验关键包"
 cd "$SRC"
 CHECK_FAIL=0
-for p in luci-theme-bootstrap luci-theme-argon luci-theme-aurora \
+for p in luci luci-base luci-theme-bootstrap luci-theme-argon luci-theme-aurora \
          luci-app-argon-config luci-app-frpc frpc tenda-preset; do
   if grep -qE "^CONFIG_PACKAGE_${p}=y" .config; then
     ok "$p"
@@ -125,6 +125,13 @@ for p in luci-theme-bootstrap luci-theme-argon luci-theme-aurora \
     CHECK_FAIL=1
   fi
 done
+# 语言包符号名不带 CONFIG_PACKAGE_ 前缀
+if grep -qE '^CONFIG_LUCI_LANG_zh_Hans=y' .config; then
+  ok "简体中文"
+else
+  warn "CONFIG_LUCI_LANG_zh_Hans 未启用"
+  CHECK_FAIL=1
+fi
 for p in mwan3 passwall sing-box xray; do
   if grep -qE "^CONFIG_PACKAGE_${p}=y" .config; then
     warn "$p 不该在镜像里，却进了 .config"
@@ -135,20 +142,22 @@ for p in mwan3 passwall sing-box xray; do
 done
 [ "$CHECK_FAIL" -eq 0 ] || die "关键包校验未通过，已中止（避免白跑一次 80 分钟编译）"
 
-# ---- 4. 注入预置文件 -------------------------------------------------------
-# OpenWrt 通过 CONFIG_TARGET_ROOTFS_INCLUDE_KERNEL + FILES_DIR 注入
-step "注入预置文件"
-if [ -d "$ROOT/files/etc" ]; then
-  for f in "$ROOT/files/etc/config/"*; do
-    [ -f "$f" ] && echo "  · /etc/config/$(basename "$f")"
-  done
-  for f in "$ROOT/files/etc/uci-defaults/"*; do
-    [ -f "$f" ] && echo "  · /etc/uci-defaults/$(basename "$f")"
-  done
-  ok "预置文件已就绪（构建时由 FILES_DIR 注入）"
-else
-  warn "未找到 files/etc，使用 OpenWrt 默认配置"
-fi
+# ---- 4. 确认预置文件已入包 -------------------------------------------------
+# ⚠️ 这一步以前只是一句注释：「OpenWrt 通过 CONFIG_TARGET_ROOTFS_INCLUDE_KERNEL
+#    + FILES_DIR 注入」—— **那套机制根本不存在**。代码只是打印了文件名，
+#    什么都没接上，于是 Run #5 的固件里 /etc/config/network、
+#    99-tenda-custom、install-mwan3.sh 全都没有，刷完是官方默认 192.168.1.1。
+#    现在预置配置由 package/tenda-preset 真正打进固件（见上面「挂载预置配置包」）。
+step "确认预置文件已入包"
+for f in etc/config/network etc/config/firewall etc/config/dhcp \
+         etc/config/system etc/uci-defaults/99-tenda-custom \
+         usr/lib/tenda/install-mwan3.sh; do
+  if [ -e "$SRC/package/tenda-preset/files/$f" ]; then
+    ok "  $f"
+  else
+    die "  预置文件缺失: $f（tenda-preset 包不完整）"
+  fi
+done
 
 # ---- 5. 下载源码（可选）---------------------------------------------------
 step "下载所有源码"
