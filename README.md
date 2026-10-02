@@ -566,7 +566,7 @@ shadow-tls  v2ray-geoip  v2ray-geosite
 社区成熟做法：把 xray/sing-box 二进制放 `/tmp`（tmpfs），开机脚本从 overlay 释放。
 512MB RAM 够用，代价是每次重启需 5–10 秒释放、期间代理不可用。
 
-### 4.7 默认安全与体验设置
+### 4.8 默认安全与体验设置
 
 - [x] 软件源切换至国内镜像（阿里云，可用 `TENDA_MIRROR` 覆盖）
 - [x] 基础工具：`bash` `vim` `curl` `htop` `tree` `htop` 等
@@ -576,6 +576,51 @@ shadow-tls  v2ray-geoip  v2ray-geosite
 - [x] 4 个主题注册到 LuCI，默认 bootstrap
 - [x] 硬件信息自动落盘 `/etc/tenda-hardware.txt`
 - [ ] 强制提示修改 root 密码（LuCI 首次登录时提示）
+
+> 📌 DHCP / 防火墙 / SSH / 系统这四项**不是**以 `/etc/config/*` 文件形式装进固件的，
+> 而是由 `99-tenda-custom` 在首次开机时用 `uci batch` 写入。原因见 `package/tenda-preset/Makefile`
+> 里的注释 —— apk 严格维护文件归属，硬覆盖会报
+> `trying to overwrite etc/config/dhcp owned by dnsmasq` 并让 `package/install` 整体失败。
+> 只有 `/etc/config/network` 是随包直接安装的（无归属冲突）。
+
+### 4.9 ⚠️ 刷机前必看：sysupgrade 镜像的 fwtool 元数据
+
+从第三方发行版（如 ImmortalWrt）刷到本仓库固件时，**必须知道这件事**：
+
+ImmortalWrt 的 `sysupgrade` 会先调 `fwtool_check_image`（`/lib/upgrade/fwtool.sh`）：
+
+```sh
+if ! fwtool -q -i /tmp/sysupgrade.meta "$1"; then
+    v "Image metadata not present"
+    [ "$REQUIRE_IMAGE_METADATA" = 1 -a "$FORCE" != 1 ] && {
+        v "Use sysupgrade -F to override this check ..."
+    }
+    [ "$REQUIRE_IMAGE_METADATA" = 1 ] && return 1
+fi
+```
+
+本仓库固件**是带元数据的**（来自官方 `filogic.mk` 里写死的 `| append-metadata`）：
+
+```json
+{ "metadata_version": "1.1", "compat_version": "1.0",
+  "supported_devices": ["tenda,be12-pro"], ... }
+```
+
+但**元数据块在文件最后 16 字节**（`FWx0` 块头在数据之后，不是之前）。
+文件一旦在传输中被截断，丢的恰好就是这块头，于是报
+`Image metadata not present` —— 而固件内容其实完全正常。
+
+**刷机前先自检，三步：**
+
+```sh
+sha256sum openwrt-...-sysupgrade.bin       # 1. 比对 sha256sums
+fwtool -q -i /tmp/m.json openwrt-...bin    # 2. 元数据在不在
+sysupgrade -T openwrt-...bin               # 3. 试刷（只校验，不写盘）
+```
+
+第 2 步能出 JSON 就说明文件完整。第 3 步用 `-T` 不会碰任何分区。
+
+> 💡 固件正确 SHA256 见每次构建的 `sha256sums`，在 Artifact 里。
 
 ---
 
