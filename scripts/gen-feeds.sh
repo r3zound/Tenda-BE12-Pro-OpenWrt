@@ -108,22 +108,30 @@ cat > feeds.conf <<EOF
 # 由 scripts/gen-feeds.sh 自动生成 —— 请勿手工编辑
 # 源：versions.lock
 # 生成时间：$(date -u '+%Y-%m-%d %H:%M:%S UTC')
-# ⚠️ feed 名只允许 [A-Za-z0-9_]。改 name 时同步改 versions.lock 的
-#    FEED_NAME_* 键，否则 scripts/feeds 会报 Syntax error 并 exit 25。
+# ⚠️ 三条铁律（违反任何一条都会 Syntax error 或 git 报错）：
+#    1) feed 名只允许 [A-Za-z0-9_] —— 禁止连字符
+#    2) 禁止引号 —— 官方 split /\s+/ 不剥引号，"https 会被当成 URL 字面量
+#    3) 禁止裸 '#' 空注释行 —— 官方 s/#.+$/ 需 # 后至少一个字符
+# 
+# ref 语法（scripts/feeds 第 227-228 行）：
+#    分支用分号  src-git foo https://host/repo.git;main
+#    commit 用 ^  src-git foo https://host/repo.git^<40位SHA>   ← 本项目用这个
+# 
+# 改 feed 名时同步改 versions.lock 的 FEED_NAME_* 键。
 # ============================================================================
 
 # ---- 官方 feeds（锁定 commit）---------------------------------------------
-src-git luci "$LUCI_REPO" "$LUCI_COMMIT"
-src-git packages "$PACKAGES_REPO" "$PACKAGES_COMMIT"
+src-git luci $LUCI_REPO^$LUCI_COMMIT
+src-git packages $PACKAGES_REPO^$PACKAGES_COMMIT
 
 # ---- LuCI 主题（第三方，官方主线不含）-------------------------------------
-src-git $N_ARGON "$ARGON_REPO" "$ARGON_COMMIT"
-src-git $N_AURORA "$AURORA_REPO" "$AURORA_COMMIT"
+src-git $N_ARGON $ARGON_REPO^$ARGON_COMMIT
+src-git $N_AURORA $AURORA_REPO^$AURORA_COMMIT
 # edge 主题取自聚合仓库；该包较旧（2021），若渲染异常见 README §4.5
-src-git $N_EDGE "$EDGE_REPO" "$EDGE_COMMIT"
+src-git $N_EDGE $EDGE_REPO^$EDGE_COMMIT
 
 # ---- 应用 -----------------------------------------------------------------
-src-git $N_FRP "$FRP_REPO" "$FRP_COMMIT"
+src-git $N_FRP $FRP_REPO^$FRP_COMMIT
 
 # ---- 刻意不引入 -----------------------------------------------------------
 # mwan3   —— 见 README §4.3。官方 mwan3 是 iptables 实现，在 fw4/nftables 上
@@ -140,10 +148,13 @@ EOF
 #     m!^src-([\w\-]+)((?:\s+--\w+(?:=\S+)?)*)\s+(\w+)(?:\s+(\S.*))?$!
 #     否则 die "Syntax error in $fname, line $line"
 #
-# ⚠️ 两个已踩过的坑，都由本校验拦截：
+# ⚠️ 三个已踩过的坑，都由本校验拦截：
 #   1) feed 名含连字符 → (\w+) 匹配失败 → exit 25
-#   2) 裸 "#" 行      → s/#.+$// 要求 # 后至少一个字符，孤立 # 不会被剥掉，
-#                       于是被当作有效行送进主正则 → Syntax error
+#   2) 裸 "#" 行       → s/#.+$// 要求 # 后至少一个字符，孤立 # 不会被剥掉，
+#                        于是被当作有效行送进主正则 → Syntax error
+#   3) URL 两侧加引号   → split /\s+/ 不剥引号，git 收到 '"https' → 
+#                        fatal: protocol '"https' is not supported
+#   （ref 必须用 ^ (commit) 或 ; (branch) 分隔，见第 227-228 行）
 echo
 echo "${CYN}▸ 语法校验（复刻官方解析语义）${RST}"
 
@@ -168,6 +179,12 @@ while (my $raw = <$fh>) {
         next;
     }
     $n++;
+    if ($orig =~ /["']/) {
+        push @errs, "  line $line: 含引号 —— 官方 split on whitespace 不剥引号，引号会进 URL\n            -> $orig";
+    }
+    if ($urls && $urls !~ m![\^;]!) {
+        push @errs, "  line $line: ref 未用 ^ (commit) 或 ; (branch) 分隔\n            -> $orig";
+    }
 }
 close $fh;
 if (@errs) {
