@@ -85,11 +85,12 @@ cd "$SRC"
   luci-mod-status luci-mod-firewall luci-mod-dhcp luci-app-firewall \
   luci-app-attendedsysupgrade luci-app-statistics luci-app-package-manager \
   luci-theme-bootstrap luci-i18n-base-zh-cn || die "luci feed 安装失败"
-./scripts/feeds install -a -p luci-theme-argon   || warn "argon 主题 feed 安装失败（该主题将缺失）"
-./scripts/feeds install -a -p luci-theme-aurora  || warn "aurora 主题 feed 安装失败（该主题将缺失）"
-./scripts/feeds install -a -p luci-theme-edge    || warn "edge 主题 feed 安装失败（该主题将缺失）"
-./scripts/feeds install -a -p luci-app-frpc      || warn "luci-app-frpc 安装失败（FRP 界面将缺失）"
-./scripts/feeds install -a -p frp                || die "官方 frp 包安装失败"
+# ⚠️ feed 名必须与 versions.lock 的 FEED_NAME_* 一致（下划线，非连字符）
+./scripts/feeds install -a -p luci_theme_argon  || warn "argon 主题 feed 安装失败（该主题将缺失）"
+./scripts/feeds install -a -p luci_theme_aurora || warn "aurora 主题 feed 安装失败（该主题将缺失）"
+./scripts/feeds install -a -p luci_theme_edge   || warn "edge 主题 feed 安装失败（该主题将缺失）"
+./scripts/feeds install -a -p luci_app_frpc     || warn "luci-app-frpc 安装失败（FRP 界面将缺失）"
+./scripts/feeds install -a -p frp               || die "官方 frp 包安装失败"
 ok "feeds 安装完成"
 
 # ---- 3. 生成 .config -------------------------------------------------------

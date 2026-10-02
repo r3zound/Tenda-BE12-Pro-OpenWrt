@@ -17,6 +17,15 @@ OPENWRT_BRANCH=main
 OPENWRT_COMMIT=3f26ab3d4d973fdbd3a1593a68e8186f5cc58dbd
 
 # ---- 官方 feeds ------------------------------------------------------------
+# ⚠️ 硬性约束：OpenWrt 的 scripts/feeds 解析器用 (\w+) 匹配 feed 名，
+#    即 **只接受 [A-Za-z0-9_]**，任何连字符都会导致
+#    "Syntax error in feeds.conf, line N" 并以 exit 25 中止。
+#    下方所有 FEED_NAME_* 必须为下划线命名，gen-feeds.sh 会强制校验。
+#
+#    另注：base-files 不是独立 feed —— 它就在 openwrt 主仓内
+#    (package/base-files)，官方 feeds.conf.default 中亦无此项。
+#    早期版本误加为独立 feed 导致构建失败，已移除。
+
 LUCI_REPO=https://github.com/openwrt/luci.git
 LUCI_BRANCH=master
 LUCI_COMMIT=aa3d48836e90ae0706c8d8f9b46b8371e45cfe1f
@@ -25,21 +34,20 @@ PACKAGES_REPO=https://github.com/openwrt/packages.git
 PACKAGES_BRANCH=master
 PACKAGES_COMMIT=88019052fa25d86bfed3106edb3ba3022d8611c1
 
-BASE_FILES_REPO=https://github.com/openwrt/base-files.git
-BASE_FILES_BRANCH=master
-# 注：构建时若无法预取 SHA，会自动解析分支 HEAD 并回写本文件
-BASE_FILES_COMMIT=AUTO
-
 # ---- LuCI 主题（均非官方主线，需自行引入）---------------------------------
+FEED_NAME_THEME_ARGON=luci_theme_argon
 THEME_ARGON_REPO=https://github.com/jerrykuku/luci-theme-argon.git
 THEME_ARGON_BRANCH=master
 THEME_ARGON_COMMIT=23c3e525578374d6b20f5e7b93d27874cd01a252
 
+FEED_NAME_THEME_AURORA=luci_theme_aurora
 THEME_AURORA_REPO=https://github.com/eamonxg/luci-theme-aurora.git
 THEME_AURORA_BRANCH=master
 THEME_AURORA_COMMIT=84c27b66952e6fc4be60128067a6b88bfd34afb5
 
 # edge 主题取自第三方聚合仓库（非上游原始仓库）
+# ⚠️ 该包为 2021 年版本，渲染异常时改用 argon / aurora，见 README §4.5
+FEED_NAME_THEME_EDGE=luci_theme_edge
 THEME_EDGE_REPO=https://github.com/zhucemax/openwrt-packages.git
 THEME_EDGE_BRANCH=packages
 THEME_EDGE_COMMIT=3ae474c833d7250e2a853b149116ab8ee89bd54a
@@ -47,6 +55,7 @@ THEME_EDGE_COMMIT=3ae474c833d7250e2a853b149116ab8ee89bd54a
 # ---- 应用 -----------------------------------------------------------------
 # frpc 守护进程：使用 openwrt/packages 官方包（v0.71.0，Go 源码编译）
 #   注意：需要 golang/host 构建依赖，会显著拉长构建时间
+FEED_NAME_FRP_LUCI=luci_app_frpc
 FRP_LUCI_REPO=https://github.com/kuoruan/luci-app-frpc.git
 FRP_LUCI_BRANCH=master
 FRP_LUCI_COMMIT=470b57063ef804899fd823016e0aa052894a0563

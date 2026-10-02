@@ -91,15 +91,34 @@ jobs:
           ./scripts/gen-feeds.sh "$OPENWRT_SRC"
 
       # ---------------------------------------------------------------------
+      - name: 校验 feeds.conf 语法 ⚠️
+        run: |
+          # gen-feeds.sh 内部已做正则自检；这里再用 OpenWrt 真实解析器复验一次。
+          # 历史教训：feed 名含连字符会导致 "Syntax error in feeds.conf" + exit 25。
+          cd openwrt
+          if perl ./scripts/feeds list >/dev/null 2>/tmp/feeds-err.txt; then
+            echo "✅ feeds list 正常"
+          fi
+          if grep -qi 'syntax error' /tmp/feeds-err.txt 2>/dev/null; then
+            echo "::error::feeds.conf 语法错误"
+            cat /tmp/feeds-err.txt
+            exit 1
+          fi
+          echo "✅ feeds.conf 通过官方解析器校验"
+          echo "--- feed 列表 ---"
+          grep '^src-' feeds.conf | awk '{print "  " $2}'
+
+      # ---------------------------------------------------------------------
       - name: 拉取 feeds
         working-directory: openwrt
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a -p luci
-          ./scripts/feeds install -a -p luci-theme-argon  || echo "⚠️ argon 缺失"
-          ./scripts/feeds install -a -p luci-theme-aurora || echo "⚠️ aurora 缺失"
-          ./scripts/feeds install -a -p luci-theme-edge   || echo "⚠️ edge 缺失"
-          ./scripts/feeds install -a -p luci-app-frpc     || echo "⚠️ frpc UI 缺失"
+          # ⚠️ feed 名必须与 versions.lock 的 FEED_NAME_* 一致（下划线，非连字符）
+          ./scripts/feeds install -a -p luci_theme_argon  || echo "⚠️ argon 缺失"
+          ./scripts/feeds install -a -p luci_theme_aurora || echo "⚠️ aurora 缺失"
+          ./scripts/feeds install -a -p luci_theme_edge   || echo "⚠️ edge 缺失"
+          ./scripts/feeds install -a -p luci_app_frpc     || echo "⚠️ frpc UI 缺失"
           ./scripts/feeds install -a -p frp
 
       # ---------------------------------------------------------------------
