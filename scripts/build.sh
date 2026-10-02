@@ -100,8 +100,11 @@ step "挂载第三方包"
 step "挂载预置配置包"
 rm -rf "$SRC/package/tenda-preset"
 cp -r "$ROOT/package/tenda-preset" "$SRC/package/tenda-preset"
-# files/ 是构建期素材，构建完就不需要了，别让 make 去扫它
-rm -rf "$SRC/package/tenda-preset/files"
+# ⚠️ files/ **必须保留** —— Makefile 的 install 规则靠 `$(CP) ./files/...` 读取它。
+#    这里曾经有个 "rm -rf files" 的"优化"，结果 make 到 install 阶段才炸，
+#    白跑一次 80 分钟编译。
+#    （顺带说明：package/ 下的 files/ 里没有 Makefile，include/scan.mk
+#      的 find -name Makefile 扫不到它，不会造成额外的包定义。）
 ok "tenda-preset 已挂载（预置网段 / 双 WAN / mwan3 助手）"
 
 # ---- 3. 生成 .config -------------------------------------------------------

@@ -46,17 +46,23 @@ define Build/Prepare
 endef
 
 define Build/Configure
+	true
 endef
 
 define Build/Compile
+	true
 endef
 
+# ⚠️ ./files/ 必须随包一起挂进来。install 规则靠它取文件。
+#    build.sh / build.yml 里**不要** rm -rf files —— 那样 make 会走到
+#    install 阶段才炸，白跑一次 80 分钟编译。
 define Package/tenda-preset/install
+	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_DIR) $(1)/usr/lib/tenda
-	$(CP) ./files/etc/config/*  $(1)/etc/config/
+	$(CP) ./files/etc/config/*        $(1)/etc/config/
 	$(CP) ./files/etc/uci-defaults/*  $(1)/etc/uci-defaults/
-	$(CP) ./files/usr/lib/tenda/*  $(1)/usr/lib/tenda/
+	$(CP) ./files/usr/lib/tenda/*     $(1)/usr/lib/tenda/
 	@chmod 0755 $(1)/etc/uci-defaults/99-tenda-custom
 	@chmod 0755 $(1)/usr/lib/tenda/install-mwan3.sh
 endef

@@ -136,11 +136,12 @@ jobs:
           # 往镜像里塞文件的正规做法是做一个包。
           # ⚠️ 曾经"以为接上了"却什么也没做，Run #5 固件里预置文件全无，
           #    刷完是官方默认 192.168.1.1。详见 package/tenda-preset/Makefile。
+          #
+          # ⚠️ files/ 必须保留：Makefile 的 install 规则靠 $(CP) ./files/... 读它。
+          #    这里曾有个 "rm -rf files" 的"优化"，会让 make 到 install 阶段才炸。
           cp -r package/tenda-preset "$OPENWRT_SRC/package/tenda-preset"
-          # files/ 是构建期素材，构建完就不需要，别让 make 去扫它
-          rm -rf "$OPENWRT_SRC/package/tenda-preset/files"
           echo "✅ tenda-preset 已挂载"
-          ls -la "$OPENWRT_SRC/package/tenda-preset/"
+          find "$OPENWRT_SRC/package/tenda-preset" -type f | sed "s|.*tenda-preset|  ·|"
 
       # ---------------------------------------------------------------------
       - name: 生成 .config

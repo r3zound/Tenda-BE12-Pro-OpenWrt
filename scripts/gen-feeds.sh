@@ -111,11 +111,10 @@ cat > feeds.conf <<EOF
 #    1) feed 名只允许 [A-Za-z0-9_] —— 禁止连字符
 #    2) 禁止引号 —— 官方 split /\s+/ 不剥引号，"https 会被当成 URL 字面量
 #    3) 禁止裸 '#' 空注释行 —— 官方 s/#.+$/ 需 # 后至少一个字符
-#
+#       （本块所有注释行末尾都带文字，别手滑写成孤零零的 #）
 # ref 语法（scripts/feeds 第 227-228 行）：
 #    分支用分号  src-git foo https://host/repo.git;main
 #    commit 用 ^  src-git foo https://host/repo.git^<40位SHA>   ← 本项目用这个
-#
 # 改 feed 名时同步改 versions.lock 的 PKG_NAME_* / *_REPO 键。
 # ============================================================================
 
@@ -145,8 +144,8 @@ EOF
 
 # ---- 额外包的记录（写在 heredoc 外，避开反引号陷阱）-----------------------
 cat >> feeds.conf <<EOF
-#
-# ---- 非 feed 的额外包（由 scripts/fetch-extra-packages.sh 负责）----------
+# ---- 下面这些**不是 feed**，只是记录来源，由
+#      scripts/fetch-extra-packages.sh 挂到 package/ 下：
 #   $N_ARGON      $ARGON_REPO^$ARGON_COMMIT
 #   $N_ARGONCFG   $ARGFG_REPO^$ARGFG_COMMIT
 #   $N_AURORA     $AURORA_REPO^$AURORA_COMMIT
