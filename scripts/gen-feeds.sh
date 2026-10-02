@@ -96,6 +96,12 @@ if [ "$(git rev-parse HEAD 2>/dev/null || echo '')" != "$OPENWRT_COMMIT" ]; then
 fi
 
 # ---- 生成 feeds.conf ------------------------------------------------------
+# ⚠️⚠️ 下面这个 heredoc 是**无引号**的（<<EOF，为了展开 $LUCI_REPO 等变量），
+#    所以块内的反引号会被 shell 当成命令替换执行。
+#    踩过的坑：曾在注释里写 `find -mindepth 1`，结果真的在 OpenWrt 源码树里
+#    跑了一遍 find，一万多个文件路径被灌进 feeds.conf。
+#    → 往这个块里加文字时，**不要用反引号**，改用单引号 'x' 或直接写在块外。
+#
 cat > feeds.conf <<EOF
 # ============================================================================
 # 由 scripts/gen-feeds.sh 自动生成 —— 请勿手工编辑
@@ -105,18 +111,18 @@ cat > feeds.conf <<EOF
 #    1) feed 名只允许 [A-Za-z0-9_] —— 禁止连字符
 #    2) 禁止引号 —— 官方 split /\s+/ 不剥引号，"https 会被当成 URL 字面量
 #    3) 禁止裸 '#' 空注释行 —— 官方 s/#.+$/ 需 # 后至少一个字符
-# 
+#
 # ref 语法（scripts/feeds 第 227-228 行）：
 #    分支用分号  src-git foo https://host/repo.git;main
 #    commit 用 ^  src-git foo https://host/repo.git^<40位SHA>   ← 本项目用这个
-# 
-# 改 feed 名时同步改 versions.lock 的 FEED_NAME_* 键。
+#
+# 改 feed 名时同步改 versions.lock 的 PKG_NAME_* / *_REPO 键。
 # ============================================================================
 
 # ---- 官方 feeds（锁定 commit）---------------------------------------------
-# ⚠️ 这里**只有官方两个 feed**。所有第三方包都不走 feeds —— 因为它们
-#    的 Makefile 在仓库根目录，而 include/scan.mk 的 `find -mindepth 1`
-#    会把根目录排除掉，feeds 永远索引不到（静默失败，不报错）。
+# ⚠️ 这里只有官方两个 feed。第三方包一律不走 feeds：它们的 Makefile 在仓库
+#    根目录，而 include/scan.mk 的 find -mindepth 1 会把根目录排除掉，
+#    feeds 永远索引不到（静默失败，不报错）。
 #    第三方包统一由 scripts/fetch-extra-packages.sh 挂到 package/ 下。
 src-git luci $LUCI_REPO^$LUCI_COMMIT
 src-git packages $PACKAGES_REPO^$PACKAGES_COMMIT
@@ -135,8 +141,12 @@ src-git packages $PACKAGES_REPO^$PACKAGES_COMMIT
 # kuoruan/luci-app-frpc —— 已移除。官方 luci feed 自带 luci-app-frpc，
 #            官方 packages feed 自带 frpc，且前者已声明 +frpc 依赖。
 #            Run #5 日志证实实际生效的就是官方版本。
+EOF
+
+# ---- 额外包的记录（写在 heredoc 外，避开反引号陷阱）-----------------------
+cat >> feeds.conf <<EOF
 #
-# ---- 非 feed 的额外包（scripts/fetch-extra-packages.sh 负责）--------------
+# ---- 非 feed 的额外包（由 scripts/fetch-extra-packages.sh 负责）----------
 #   $N_ARGON      $ARGON_REPO^$ARGON_COMMIT
 #   $N_ARGONCFG   $ARGFG_REPO^$ARGFG_COMMIT
 #   $N_AURORA     $AURORA_REPO^$AURORA_COMMIT
@@ -190,6 +200,13 @@ close $fh;
 if (@errs) {
     print STDERR "  found " . scalar(@errs) . " syntax error(s):\n";
     print STDERR join("\n", @errs), "\n";
+    exit 1;
+}
+if ($n > 20) {
+    print STDERR "  ❌ 只应有个位数的 feed 定义，却数出 $n 条。\n";
+    print STDERR "     多半是 heredoc 里的反引号触发了命令替换，把某个命令的\n";
+    print STDERR "     输出灌进了 feeds.conf。检查 <<EOF 块内是否用了反引号。\n";
+    print STDERR "     （无引号 heredoc 会执行反引号里的命令 —— 踩过这个坑）\n";
     exit 1;
 }
 print "  [OK] $n feed definition(s) passed\n";

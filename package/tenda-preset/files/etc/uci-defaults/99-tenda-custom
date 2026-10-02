@@ -1,0 +1,181 @@
+#!/bin/sh
+# =============================================================================
+# /etc/uci-defaults/99-tenda-custom
+# -----------------------------------------------------------------------------
+# Tenda BE12 Pro 首次启动配置脚本
+#
+# 执行时机：首次开机，OpenWrt 会依次执行 /etc/uci-defaults/ 下的脚本，
+#           成功后自动重命名为 .dpkg-remove 标记文件。
+#
+# ⚠️ 本脚本不含任何宽带凭据。
+# =============================================================================
+
+. /lib/functions.sh
+
+LOG_TAG="tenda-custom"
+
+log()  { logger -t "$LOG_TAG" -p user.info "$*"; echo "$*"; }
+warn() { logger -t "$LOG_TAG" -p user.warn "$*"; echo "! $*"; }
+
+# -----------------------------------------------------------------------------
+# 1. 软件源切换到国内镜像
+#    OpenWrt 25.12+ 使用 apk。官方源在 /etc/apk/repositories，
+#    这里替换为阿里云（可用环境变量 TENDA_MIRROR 覆盖）。
+# -----------------------------------------------------------------------------
+switch_mirror() {
+	local repos=/etc/apk/repositories
+	[ -f "$repos" ] || { warn "未找到 $repos，跳过镜像切换"; return 0; }
+
+	local mirror="${TENDA_MIRROR:-https://mirrors.aliyun.com/openwrt}"
+	# 先备份，保留回退能力
+	[ -f "${repos}.origin" ] || cp "$repos" "${repos}.origin"
+
+	if sed -i "s|https://downloads\.openwrt\.org|${mirror}|g" "$repos"; then
+		log "软件源已切换至: $mirror"
+	else
+		warn "镜像切换失败，保持官方源"
+	fi
+}
+
+# -----------------------------------------------------------------------------
+# 2. LAN 地址确认
+#    预置配置已写入 192.168.100.254，这里做一次兜底校验
+# -----------------------------------------------------------------------------
+ensure_lan() {
+	local ip
+	ip="$(uci -q get network.lan.ipaddr)"
+	if [ "$ip" != "192.168.100.254" ]; then
+		uci set network.lan.ipaddr='192.168.100.254'
+		uci set network.lan.netmask='255.255.255.0'
+		uci commit network
+		log "LAN 地址已修正为 192.168.100.254"
+	else
+		log "LAN 地址正确: 192.168.100.254"
+	fi
+}
+
+# -----------------------------------------------------------------------------
+# 3. 接口规划校验
+#    确保 lan3 未被误加入 LAN 桥（它是 WAN2）
+# -----------------------------------------------------------------------------
+check_interfaces() {
+	local ports
+	ports="$(uci -q get network.lan.device)"
+	if [ -z "$ports" ]; then
+		# 用 bridge device 形式
+		ports="$(uci -q get network.@device[0].ports | tr '\n' ' ')"
+	fi
+
+	if echo "$ports" | grep -q "lan3"; then
+		warn "⚠️ 检测到 lan3 在 LAN 桥中！但 lan3 应作为 WAN2 使用"
+		warn "   请检查 /etc/config/network"
+	else
+		log "接口规划正确: lan3 未加入 LAN 桥"
+	fi
+
+	# 确认 eth2 未被加入 LAN 桥
+	if echo "$ports" | grep -q "eth2"; then
+		warn "⚠️ 检测到 eth2 在 LAN 桥中！eth2 应作为 WAN1 使用"
+	fi
+}
+
+# -----------------------------------------------------------------------------
+# 4. LuCI 主题注册
+#    把已安装的主题注册到 /etc/config/luci，确保下拉框里能选到
+# -----------------------------------------------------------------------------
+register_themes() {
+	local themes="bootstrap"
+	local t
+
+	for t in /usr/share/luci/menu.d/luci-theme-*; do
+		[ -e "$t" ] || continue
+	done
+
+	# 探测实际存在的主题目录
+	for t in argon aurora edge bootstrap; do
+		if [ -d "/www/luci-static/$t" ]; then
+			themes="$themes $t"
+		fi
+	done
+
+	uci -q delete luci.themes 2>/dev/null
+	for t in $themes; do
+		uci set luci.themes.$t="/luci-static/$t"
+	done
+
+	# 默认主题：bootstrap 最稳，argon 次之
+	if [ -d /www/luci-static/bootstrap ]; then
+		uci set luci.main.mediaurlbase='/luci-static/bootstrap'
+	fi
+	uci commit luci
+	log "已注册 LuCI 主题:$themes（默认 bootstrap）"
+}
+
+# -----------------------------------------------------------------------------
+# 5. 无线默认关闭
+#    安全策略：首次启动不广播 SSID，用户配置后再启用
+# -----------------------------------------------------------------------------
+disable_wifi() {
+	uci set wireless.default_radio0.disabled='1' 2>/dev/null
+	uci set wireless.default_radio1.disabled='1' 2>/dev/null
+	uci commit wireless 2>/dev/null
+	log "无线已默认关闭，请配置 SSID 后于 LuCI 中启用"
+}
+
+# -----------------------------------------------------------------------------
+# 6. 安装 mwan3（原生 nft 移植版）
+#    ⚠️ 刻意不打进固件镜像 —— 原因见 README §4.3
+#    首次启动尝试联网安装；失败则输出提示，不阻塞启动
+# -----------------------------------------------------------------------------
+try_install_mwan3() {
+	if command -v mwan3 >/dev/null 2>&1; then
+		log "mwan3 已安装，跳过"
+		return 0
+	fi
+
+	log "尝试安装 mwan3（原生 nft 移植版）…"
+	sh /usr/lib/tenda/install-mwan3.sh 2>&1 | while read -r line; do
+		logger -t "$LOG_TAG" -p user.info "$line"
+	done
+}
+
+# -----------------------------------------------------------------------------
+# 7. 硬件信息记录
+# -----------------------------------------------------------------------------
+log_hardware() {
+	echo "=== Tenda BE12 Pro 硬件信息 ===" > /etc/tenda-hardware.txt
+	echo "构建版本: $(cat /etc/openwrt_release 2>/dev/null | tr '\n' ' ')" >> /etc/tenda-hardware.txt
+	echo "启动时间: $(date)" >> /etc/tenda-hardware.txt
+	echo "" >> /etc/tenda-hardware.txt
+	echo "--- 接口 ---" >> /etc/tenda-hardware.txt
+	ip link show >> /etc/tenda-hardware.txt 2>&1
+	echo "" >> /etc/tenda-hardware.txt
+	echo "--- 无线天线配置 ---" >> /etc/tenda-hardware.txt
+	grep -E 'antenna_(rx|tx)' /etc/board.json >> /etc/tenda-hardware.txt 2>&1
+	echo "" >> /etc/tenda-hardware.txt
+	echo "--- WED 状态 ---" >> /etc/tenda-hardware.txt
+	{
+		ls /sys/kernel/debug/mtk_wed/ 2>&1
+		ls /sys/kernel/debug/ieee80211/phy0/mt7996e/ 2>&1
+	} >> /etc/tenda-hardware.txt
+	echo "" >> /etc/tenda-hardware.txt
+	echo "--- mtd 分区 ---" >> /etc/tenda-hardware.txt
+	cat /proc/mtd >> /etc/tenda-hardware.txt 2>&1
+	log "硬件信息已记录到 /etc/tenda-hardware.txt"
+}
+
+# =============================================================================
+# 执行
+# =============================================================================
+log "首次启动配置开始…"
+
+switch_mirror
+ensure_lan
+check_interfaces
+register_themes
+disable_wifi
+log_hardware
+try_install_mwan3
+
+log "首次启动配置完成"
+exit 0

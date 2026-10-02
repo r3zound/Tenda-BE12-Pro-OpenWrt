@@ -14,7 +14,7 @@
 # ---- OpenWrt 官方主线（基线）----------------------------------------------
 OPENWRT_REPO=https://github.com/openwrt/openwrt.git
 OPENWRT_BRANCH=main
-OPENWRT_COMMIT=3f26ab3d4d973fdbd3a1593a68e8186f5cc58dbd
+OPENWRT_COMMIT=HEAD
 
 # ---- 官方 feeds ------------------------------------------------------------
 # ⚠️ 硬性约束：OpenWrt 的 scripts/feeds 解析器用 (\w+) 匹配 feed 名，

@@ -130,6 +130,18 @@ jobs:
           ls -1 "$OPENWRT_SRC/package" | grep -vE '^(feeds|README|index|config)' || true
           cat "$OPENWRT_SRC/package/.extra-packages"
 
+      - name: 挂载预置配置包
+        run: |
+          # OpenWrt 没有 FILES_DIR 这种自定义 rootfs 注入机制，
+          # 往镜像里塞文件的正规做法是做一个包。
+          # ⚠️ 曾经"以为接上了"却什么也没做，Run #5 固件里预置文件全无，
+          #    刷完是官方默认 192.168.1.1。详见 package/tenda-preset/Makefile。
+          cp -r package/tenda-preset "$OPENWRT_SRC/package/tenda-preset"
+          # files/ 是构建期素材，构建完就不需要，别让 make 去扫它
+          rm -rf "$OPENWRT_SRC/package/tenda-preset/files"
+          echo "✅ tenda-preset 已挂载"
+          ls -la "$OPENWRT_SRC/package/tenda-preset/"
+
       # ---------------------------------------------------------------------
       - name: 生成 .config
         run: |
@@ -147,7 +159,7 @@ jobs:
           cd "$OPENWRT_SRC"
           FAIL=0
           for p in luci-theme-bootstrap luci-theme-argon luci-theme-aurora \
-                   luci-app-argon-config luci-app-frpc frpc; do
+                   luci-app-argon-config luci-app-frpc frpc tenda-preset; do
             if grep -qE "^CONFIG_PACKAGE_${p}=y" .config; then
               echo "  ✅ $p"
             else
@@ -219,6 +231,14 @@ jobs:
             echo "::error::体积超限，构建判定失败"
             exit 1
           fi
+
+      # ---------------------------------------------------------------------
+      - name: 固件内容抽查 ⚠️
+        run: |
+          # 编译成功 ≠ 内容正确。
+          # Run #5 就是编译全绿、体积守卫也过，但预置配置文件一个都没进固件；
+          # Run #5 的三个 LuCI 主题也全都没进。只有直接扫 squashfs 才抓得住。
+          ./scripts/verify-firmware.sh "$OPENWRT_SRC"
 
       # ---------------------------------------------------------------------
       - name: 上传 ccache

@@ -94,6 +94,16 @@ ok "feeds 安装完成"
 step "挂载第三方包"
 "$ROOT/scripts/fetch-extra-packages.sh" "$SRC" || die "第三方包挂载失败"
 
+# ---- 2.6 挂载预置配置包 ----------------------------------------------------
+# OpenWrt 没有 FILES_DIR 这种自定义 rootfs 注入机制，想往镜像里塞文件
+# 正规做法就是做一个包。本包由 package/tenda-preset 提供，内容来自 files/。
+step "挂载预置配置包"
+rm -rf "$SRC/package/tenda-preset"
+cp -r "$ROOT/package/tenda-preset" "$SRC/package/tenda-preset"
+# files/ 是构建期素材，构建完就不需要了，别让 make 去扫它
+rm -rf "$SRC/package/tenda-preset/files"
+ok "tenda-preset 已挂载（预置网段 / 双 WAN / mwan3 助手）"
+
 # ---- 3. 生成 .config -------------------------------------------------------
 step "生成 .config"
 "$ROOT/scripts/gen-config.sh" "$SRC" || die "配置生成失败"
@@ -104,7 +114,7 @@ step "校验关键包"
 cd "$SRC"
 CHECK_FAIL=0
 for p in luci-theme-bootstrap luci-theme-argon luci-theme-aurora \
-         luci-app-argon-config luci-app-frpc frpc; do
+         luci-app-argon-config luci-app-frpc frpc tenda-preset; do
   if grep -qE "^CONFIG_PACKAGE_${p}=y" .config; then
     ok "$p"
   else

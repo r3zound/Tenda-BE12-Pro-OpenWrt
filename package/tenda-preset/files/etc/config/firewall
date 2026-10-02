@@ -1,0 +1,70 @@
+# =============================================================================
+# /etc/config/firewall — Tenda BE12 Pro 预置防火墙配置
+# -----------------------------------------------------------------------------
+# 关键点：两条 WAN 必须在同一个 wan 区域，mwan3 策略路由才能正常标记与转发。
+# =============================================================================
+
+config defaults
+	option syn_flood '1'
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option drop_invalid '1'
+	option family 'ipv4'
+
+# -----------------------------------------------------------------------------
+# LAN 区域
+# -----------------------------------------------------------------------------
+config zone
+	option name 'lan'
+	list network 'lan'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'ACCEPT'
+
+# -----------------------------------------------------------------------------
+# WAN 区域 — 两条 WAN 同区
+#   mtu_fix 很重要：电信 DHCP 通常协商 1500，移动 PPPoE 为 1492，
+#   两者不一致会导致大包被丢弃（见 README §5.6）
+# -----------------------------------------------------------------------------
+config zone
+	option name 'wan'
+	list network 'wan'
+	list network 'wan2'
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option masq '1'
+	option mtu_fix '1'
+
+# -----------------------------------------------------------------------------
+# 转发规则
+#   ⚠️ 走 mwan3 的流量绕过 br-lan，需显式放行 wan → lan 的转发方向。
+#      mwan3 会自行打标并做策略路由，这里只保证基础连通性。
+# -----------------------------------------------------------------------------
+config forwarding
+	option src 'lan'
+	option dest 'wan'
+
+config rule
+	option name 'Allow-DHCP-Renew'
+	option src 'wan'
+	option proto 'udp'
+	option dest_port '68'
+	option family 'ipv4'
+	option target 'ACCEPT'
+	option src_ip '0.0.0.0/0'
+
+config rule
+	option name 'Allow-Ping'
+	option src 'wan'
+	option proto 'icmp'
+	option family 'ipv4'
+	option target 'ACCEPT'
+
+config rule
+	option name 'Allow-IGMP'
+	option src 'wan'
+	option proto 'igmp'
+	option family 'ipv4'
+	option target 'ACCEPT'

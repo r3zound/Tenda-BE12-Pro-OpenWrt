@@ -1,0 +1,90 @@
+# =============================================================================
+# /etc/config/network — Tenda BE12 Pro 预置网络配置
+# -----------------------------------------------------------------------------
+# ⚠️ 本文件不含任何宽带账号密码（仓库是公开的，绝不能写入凭据）。
+#    两条 WAN 的 PPPoE 凭据需在刷机后于 LuCI 中手工填写。
+#
+# 接口映射依据官方 board.json（见 README §3.3）：
+#   LAN = lan3 + lan4 + lan5 + eth1
+#   WAN = eth2
+# =============================================================================
+
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+
+# -----------------------------------------------------------------------------
+# LAN
+#   eth1 = 2.5G（SoC 内部 PHY）
+#   lan4 / lan5 = 1G（AN8855AE 交换芯片下挂）
+#   lan3 留作 WAN2，不加入 LAN
+# -----------------------------------------------------------------------------
+config interface 'lan'
+	option device 'br-lan'
+	option proto 'static'
+	option ipaddr '192.168.100.254'
+	option netmask '255.255.255.0'
+	option ip6assign '60'
+	list dns '223.5.5.5'
+	list dns '119.29.29.29'
+
+config device
+	option name 'br-lan'
+	option type 'bridge'
+	list ports 'lan4'
+	list ports 'lan5'
+	list ports 'eth1'
+	option stp '1'
+	option igmp_snooping '1'
+
+# -----------------------------------------------------------------------------
+# WAN1 — 电信 1000M，走 eth2 (2.5G)
+#   光猫为路由模式 → DHCP 取址 → ⚠️ 双重 NAT
+#   端口转发需在光猫上额外配置一次
+# -----------------------------------------------------------------------------
+config interface 'wan'
+	option device 'eth2'
+	option proto 'dhcp'
+	option metric '10'
+
+# -----------------------------------------------------------------------------
+# WAN2 — 移动 300M，走 lan3 (1G)
+#   光猫已桥接 → 路由器 PPPoE 直拨 → ✅ 单层 NAT
+#   ⚠️ 账号密码留空，刷机后手工填写：
+#     uci set network.wan2.username='你的移动宽带账号'
+#     uci set network.wan2.password='你的移动宽带密码'
+#     uci commit network && /etc/init.d/network restart
+# -----------------------------------------------------------------------------
+config interface 'wan2'
+	option device 'lan3'
+	option proto 'pppoe'
+	option username ''
+	option password ''
+	option metric '20'
+	option ipv6 '0'
+
+# PPPoE 性能调优
+config pppoless 'wan2_lease'
+	list interface 'wan2'
+
+# -----------------------------------------------------------------------------
+# IPv6：默认关闭。电信走 DHCP 无前缀委派，移动为 PPPoE，双 WAN 场景下 IPv6
+# 会引入额外的路由与地址管理复杂度。如需启用，见 README §5.5 备注。
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# 设备定义
+# -----------------------------------------------------------------------------
+config device
+	option name 'lan3'
+	option type 'ethernet'
+
+config device
+	option name 'lan4'
+	option type 'ethernet'
+
+config device
+	option name 'lan5'
+	option type 'ethernet'

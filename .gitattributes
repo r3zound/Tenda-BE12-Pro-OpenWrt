@@ -1,0 +1,14 @@
+# 预置文件必须保持 LF 换行。
+# 仓库里若是 CRLF，uci-defaults 脚本在设备上会因 \r 而执行失败，
+# 而且 /etc/config/* 里多出的 \r 会让 uci 解析出诡异的配置值。
+* text=auto eol=lf
+
+# shell 脚本与固件二进制，强制 LF
+*.sh text eol=lf
+files/** text eol=lf
+files/etc/config/** text eol=lf
+files/usr/lib/tenda/** text eol=lf
+*.apk binary
+*.ipk binary
+*.bin binary
+*.tar.gz binary
