@@ -1,0 +1,33 @@
+# OpenWrt 构建目录（体积巨大，绝不入库）
+openwrt/
+dl/
+build_dir/
+staging_dir/
+tmp/
+bin/
+logs/
+
+# 调研原始资料（体积大，按需保留）
+!docs/
+
+# 本地配置（可能含宽带凭据）
+*.local
+config.local
+secrets/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# 凭据保护 —— 任何情况下都不要提交
+*credentials*
+*.secret*
+*pppoe-secret*
+
+# Node（仅本地 YAML 校验用，不入库）
+node_modules/
+package-lock.json
+package.json

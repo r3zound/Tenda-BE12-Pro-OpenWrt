@@ -1,0 +1,215 @@
+# =============================================================================
+# Tenda BE12 Pro 固件构建 — GitHub Actions
+# -----------------------------------------------------------------------------
+# 触发方式：
+#   1. Actions 页面 → Run workflow（手动）
+#   2. 推送 tag：git push origin v1.0.0
+#   3. 推送到 main 分支
+#
+# 产物：Actions Artifacts 中的固件 .bin 文件
+# =============================================================================
+name: Build Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: '变体标识（写入 config.buildinfo）'
+        required: false
+        default: 'main'
+      full_rebuild:
+        description: '强制全新构建（忽略缓存）'
+        type: boolean
+        required: false
+        default: false
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+  schedule:
+    # 每周一 03:17 UTC 跟随上游 SNAPSHOT 检查更新
+    - cron: '17 3 * * 1'
+
+env:
+  OPENWRT_SRC: ${{ github.workspace }}/openwrt
+
+jobs:
+  build:
+    name: Build (mediatek/filogic - tenda_be12-pro)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      # ---------------------------------------------------------------------
+      - name: 检出本仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ---------------------------------------------------------------------
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext \
+            git libncurses-dev libssl-dev python3-setuptools \
+            rsync swig unzip zlib1g-dev file wget bc \
+            ecj fastjar java-propose-classpath \
+            apparmor-utils apt-utils cmake ccache
+
+      # ---------------------------------------------------------------------
+      - name: 配置 ccache
+        run: |
+          ccache -M 5G
+          ccache -z
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          echo "ccache 版本: $(ccache --version | head -1)"
+
+      # ---------------------------------------------------------------------
+      - name: 恢复 ccache 缓存
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.run_id }}
+          restore-keys: |
+            ccache-
+
+      # ---------------------------------------------------------------------
+      - name: 校验 versions.lock
+        run: |
+          echo "▸ 锁定的上游版本："
+          grep -E '^[A-Z_]+_(REPO|BRANCH|COMMIT)=' versions.lock \
+            | while IFS='=' read -r k v; do printf "  %-28s %s\n" "$k" "$v"; done
+
+      # ---------------------------------------------------------------------
+      - name: 生成 feeds.conf（锁定 commit）
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/gen-feeds.sh "$OPENWRT_SRC"
+
+      # ---------------------------------------------------------------------
+      - name: 拉取 feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a -p luci
+          ./scripts/feeds install -a -p luci-theme-argon  || echo "⚠️ argon 缺失"
+          ./scripts/feeds install -a -p luci-theme-aurora || echo "⚠️ aurora 缺失"
+          ./scripts/feeds install -a -p luci-theme-edge   || echo "⚠️ edge 缺失"
+          ./scripts/feeds install -a -p luci-app-frpc     || echo "⚠️ frpc UI 缺失"
+          ./scripts/feeds install -a -p frp
+
+      # ---------------------------------------------------------------------
+      - name: 生成 .config
+        run: |
+          ./scripts/gen-config.sh "$OPENWRT_SRC"
+          echo "──── .config 摘要 ────"
+          grep -E '^CONFIG_(TARGET_mediatek|PACKAGE_luci-theme|PACKAGE_frpc|LUCI_LANG)' \
+            openwrt/.config | sort
+
+      # ---------------------------------------------------------------------
+      - name: 下载源码
+        working-directory: openwrt
+        run: make download -j$(nproc) V=s
+
+      # ---------------------------------------------------------------------
+      - name: 编译固件
+        working-directory: openwrt
+        env:
+          VARIANT: ${{ inputs.variant || 'main' }}
+        run: |
+          # frp 是 Go 包，构建耗时长，单独标记
+          echo "▸ 预计耗时较长（frp 需要 Go 工具链）"
+          make -j$(nproc) V=s 2>&1 | tee /tmp/build.log || {
+            echo "❌ 编译失败，末尾 100 行日志："
+            tail -100 /tmp/build.log
+            exit 1
+          }
+
+      # ---------------------------------------------------------------------
+      - name: 记录构建信息
+        run: |
+          cd openwrt
+          {
+            echo "variant: ${{ inputs.variant || 'main' }}"
+            echo "github_run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "built_at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "runner: $(uname -srm)"
+            echo "openwrt_commit: $(git rev-parse HEAD)"
+            echo ""
+            echo "=== feeds.conf ==="; cat feeds.conf
+            echo ""
+            echo "=== .config ==="; cat .config
+          } > bin/targets/mediatek/filogic/config.buildinfo
+
+      # ---------------------------------------------------------------------
+      - name: 生成校验和
+        run: |
+          cd openwrt/bin/targets/mediatek/filogic
+          sha256sum *.bin > sha256sums
+          cat sha256sums
+
+      # ---------------------------------------------------------------------
+      - name: 体积守卫 ⚠️
+        run: |
+          # 超过 rootfs 上限会失败，防止「编译通过但刷完变砖」
+          ./scripts/size-guard.sh "$OPENWRT_SRC" "${{ inputs.variant || 'main' }}" \
+            | tee /tmp/size-guard.log
+          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+            echo ""
+            echo "::error::体积超限，构建判定失败"
+            exit 1
+          fi
+
+      # ---------------------------------------------------------------------
+      - name: 上传 ccache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.run_id }}
+
+      # ---------------------------------------------------------------------
+      - name: 上传固件产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: tenda_be12-pro-${{ inputs.variant || 'main' }}-${{ github.run_number }}
+          path: |
+            openwrt/bin/targets/mediatek/filogic/*.bin
+            openwrt/bin/targets/mediatek/filogic/sha256sums
+            openwrt/bin/targets/mediatek/filogic/config.buildinfo
+            openwrt/bin/targets/mediatek/filogic/packages/
+          retention-days: 90
+          if-no-files-found: error
+
+      # ---------------------------------------------------------------------
+      - name: 发布 Release（仅 tag 触发）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            openwrt/bin/targets/mediatek/filogic/openwrt-mediatek-filogic-tenda_be12-pro-squashfs-sysupgrade.bin
+            openwrt/bin/targets/mediatek/filogic/sha256sums
+            openwrt/bin/targets/mediatek/filogic/config.buildinfo
+          body: |
+            ## Tenda BE12 Pro 固件 ${{ github.ref_name }}
+
+            **校验和**
+            ```
+            $(cat openwrt/bin/targets/mediatek/filogic/sha256sums)
+            ```
+
+            ### 刷机前必读
+            1. 校验 SHA256：`sha256sum -c sha256sums`
+            2. 确认型号为 **Tenda BE12 Pro（tenda_be12-pro）**
+            3. 首次从原厂固件进入需**过渡固件**，见 README §7 阶段一
+            4. 升级时**不要勾选「保留设置」**，见 README §7 阶段二
+            5. ⚠️ 刷完必看 **README §8 救援流程**
+
+            ### 安装 mwan3（每次升级后都需重装）
+            ```sh
+            sh /usr/lib/tenda/install-mwan3.sh
+            ```

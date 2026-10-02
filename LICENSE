@@ -1,0 +1,22 @@
+MIT License
+
+Copyright (c) 2026 r3zound
+
+本仓库的构建脚本、配置片段与文档以 MIT 许可发布。
+
+固件二进制产物不随本仓库分发，请自行编译或从 GitHub Actions
+Artifacts 获取。
+
+固件内包含大量第三方开源组件，各自遵循其原始许可证：
+
+| 组件                        | 许可证    | 来源                              |
+|-----------------------------|-----------|-----------------------------------|
+| OpenWrt / LuCI              | GPL-2.0   | https://github.com/openwrt        |
+| frp (frpc/frps)             | Apache-2.0| https://github.com/fatedier/frp   |
+| luci-app-frpc               | MIT       | https://github.com/kuoruan/luci-app-frpc |
+| luci-theme-argon            | Apache-2.0| https://github.com/jerrykuku/luci-theme-argon |
+| luci-theme-aurora           | Apache-2.0| https://github.com/eamonxg/luci-theme-aurora |
+| luci-theme-edge             | Apache-2.0| https://github.com/zhucemax/openwrt-packages |
+| mwan3 (刷机后单独安装)        | GPL-2.0   | https://github.com/dl12345/mwan3   |
+
+mwan3 与 passwall 刻意不打包进固件镜像，原因见 README §4.3 与 §4.6。
