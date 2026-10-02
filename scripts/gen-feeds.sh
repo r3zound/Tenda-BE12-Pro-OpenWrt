@@ -71,19 +71,19 @@ validate_sha() {
 }
 
 FAIL=0
-validate_feed_name "luci"           "LUCI_REPO"          || FAIL=1
-validate_feed_name "packages"       "PACKAGES_REPO"      || FAIL=1
+validate_feed_name "luci"           "LUCI_REPO"             || FAIL=1
+validate_feed_name "packages"       "PACKAGES_REPO"         || FAIL=1
 validate_feed_name "$N_ARGON"       "FEED_NAME_THEME_ARGON"  || FAIL=1
 validate_feed_name "$N_AURORA"      "FEED_NAME_THEME_AURORA" || FAIL=1
 validate_feed_name "$N_EDGE"        "FEED_NAME_THEME_EDGE"   || FAIL=1
 validate_feed_name "$N_FRP"         "FEED_NAME_FRP_LUCI"     || FAIL=1
 echo
-validate_sha "$OPENWRT_COMMIT"  "openwrt"      || true
-validate_sha "$LUCI_COMMIT"     "luci"         || true
-validate_sha "$PACKAGES_COMMIT" "packages"     || true
-validate_sha "$ARGON_COMMIT"    "argon"        || true
-validate_sha "$AURORA_COMMIT"   "aurora"       || true
-validate_sha "$EDGE_COMMIT"     "edge"         || true
+validate_sha "$OPENWRT_COMMIT"  "openwrt"       || true
+validate_sha "$LUCI_COMMIT"     "luci"          || true
+validate_sha "$PACKAGES_COMMIT" "packages"      || true
+validate_sha "$ARGON_COMMIT"    "argon"         || true
+validate_sha "$AURORA_COMMIT"   "aurora"        || true
+validate_sha "$EDGE_COMMIT"     "edge"          || true
 validate_sha "$FRP_COMMIT"      "luci-app-frpc" || true
 
 [ "$FAIL" -eq 0 ] || die "feeds.conf 校验未通过，已中止（修复 versions.lock 后重试）"
@@ -108,7 +108,6 @@ cat > feeds.conf <<EOF
 # 由 scripts/gen-feeds.sh 自动生成 —— 请勿手工编辑
 # 源：versions.lock
 # 生成时间：$(date -u '+%Y-%m-%d %H:%M:%S UTC')
-#
 # ⚠️ feed 名只允许 [A-Za-z0-9_]。改 name 时同步改 versions.lock 的
 #    FEED_NAME_* 键，否则 scripts/feeds 会报 Syntax error 并 exit 25。
 # ============================================================================
@@ -131,42 +130,64 @@ src-git $N_FRP "$FRP_REPO" "$FRP_COMMIT"
 #            负载均衡已失效；且含 mwan3 的 sysupgrade 会静默装回失效版本。
 #            改用 dl12345/mwan3 原生 nft 移植版，刷机后单独安装。
 # passwall —— 已按需求移除（体积超限）。见 README §4.6。
-#
 # base-files —— 不是独立 feed，就在 openwrt 主仓 package/base-files 内。
 #            官方 feeds.conf.default 中亦无此项，勿加。
 EOF
 
-# ---- 用 OpenWrt 真实解析器复验 ---------------------------------------------
-# scripts/feeds 若已就绪，直接用它验证语法（最权威）；否则退回正则自检
-if [ -x ./scripts/feeds ]; then
-  echo
-  echo "${CYN}▸ 用 OpenWrt scripts/feeds 复验语法${RST}"
-  if perl ./scripts/feeds list >/dev/null 2>/tmp/feeds-err.txt; then
-    :
-  fi
-  if grep -qi 'syntax error' /tmp/feeds-err.txt 2>/dev/null; then
-    cat /tmp/feeds-err.txt
-    die "feeds.conf 语法校验未通过"
-  fi
-  rm -f /tmp/feeds-err.txt
-  echo "  ${GRN}✓${RST} 语法校验通过"
+# ---- 语法校验：忠实复刻 OpenWrt scripts/feeds 的解析语义 -------------------
+# 官方解析逻辑（scripts/feeds 的 parse_file 函数）：
+#     chomp; s/#.+$//; next unless /\S/;
+#     m!^src-([\w\-]+)((?:\s+--\w+(?:=\S+)?)*)\s+(\w+)(?:\s+(\S.*))?$!
+#     否则 die "Syntax error in $fname, line $line"
+#
+# ⚠️ 两个已踩过的坑，都由本校验拦截：
+#   1) feed 名含连字符 → (\w+) 匹配失败 → exit 25
+#   2) 裸 "#" 行      → s/#.+$// 要求 # 后至少一个字符，孤立 # 不会被剥掉，
+#                       于是被当作有效行送进主正则 → Syntax error
+echo
+echo "${CYN}▸ 语法校验（复刻官方解析语义）${RST}"
+
+if perl - feeds.conf <<'PERLCHK'
+use strict; use warnings;
+my $file = shift;
+open(my $fh, '<', $file) or die "cannot open $file: $!";
+my $line = 0; my @errs; my $n = 0;
+while (my $raw = <$fh>) {
+    chomp $raw;
+    my $orig = $raw;
+    $raw =~ s/#.+//;
+    $line++;
+    next if $raw !~ /\S/;
+    my ($type, $flags, $name, $urls) =
+        $raw =~ m!^src-([\w\-]+)((?:\s+--\w+(?:=\S+)?)*)\s+(\w+)(?:\s+(\S.*))?$!;
+    if (!$type || !$name) {
+        my $why = ($orig =~ /^#\s*$/)
+            ? '裸 "#" 行 —— 官方 s/#.+$/ 不匹配，会被当作有效行'
+            : '不匹配官方正则（检查 feed 名是否含连字符）';
+        push @errs, "  line $line: $why\n            -> $orig";
+        next;
+    }
+    $n++;
+}
+close $fh;
+if (@errs) {
+    print STDERR "  found " . scalar(@errs) . " syntax error(s):\n";
+    print STDERR join("\n", @errs), "\n";
+    exit 1;
+}
+print "  [OK] $n feed definition(s) passed\n";
+exit 0;
+PERLCHK
+then
+  echo "  ${GRN}OK${RST} 语法校验通过"
 else
-  # 自检：逐行套用官方正则
   echo
-  echo "${CYN}▸ 正则自检（scripts/feeds 未就绪）${RST}"
-  local_rc=0
-  while IFS= read -r line; do
-    [[ "$line" =~ ^src- ]] || continue
-    if ! echo "$line" | grep -qE '^src-([\w-]+)(( +--\w+(=\S+)?)*) +\w+( +\S.*)?$'; then
-      echo "  ${RED}❌ 不匹配官方正则: $line${RST}"
-      local_rc=1
-    fi
-  done < feeds.conf
-  [ "$local_rc" -eq 0 ] || die "feeds.conf 语法自检未通过"
-  echo "  ${GRN}✓${RST} 全部行匹配官方正则"
+  echo "  ${RED}feeds.conf 存在语法错误${RST}"
+  echo "  ${RED}铁律 1: feed 名只允许 [A-Za-z0-9_]，禁止连字符${RST}"
+  echo "  ${RED}铁律 2: 禁止写裸 '#' 空注释行（官方 s/#.+\x2f// 不匹配）${RST}"
+  die "feeds.conf 语法校验未通过"
 fi
 
-echo
 echo "${GRN}✅ feeds.conf 已生成并通过校验${RST}: $SRC/feeds.conf"
 echo
 echo "feed 列表（供 scripts/feeds install -p 使用）："
