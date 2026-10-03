@@ -180,7 +180,42 @@ DHCP 池数量 100|set dhcp.lan.limit='100'
 防火墙 lan 区放行|input='ACCEPT'
 时区 CST-8|set system.@system[0].timezone='CST-8'
 主机名 Tenda-BE12-Pro|set system.@system[0].hostname='Tenda-BE12-Pro'
-EOF
+  # ---- 段类型守卫（本项目的第 9 个静默坑）----
+  # ⚠️ `set <包>.<段>=<值>` 在 uci batch 里是**给段赋类型**，不是赋选项值。
+  #    dnsmasq 的 init 脚本只遍历 `config_foreach filter_dnsmasq dhcp`，
+  #    所以一旦把 dhcp.lan 的类型写成 interface / dnsmasq，LAN 段就被整个跳过，
+  #    不生成 dhcp-range —— 刷完客户端拿不到 IP。
+  #
+  #    为什么前面的检查拦不住：
+  #      · uci batch 正常返回 0，没有任何报错
+  #      · start / limit 等选项**确实写进去了**（所以回读校验报 4/4 通过）
+  #      · 上面那几条 grep 只找选项语句，看不见类型
+  #      · CI 绿、体积守卫过、sysupgrade -T 也过（它只校验镜像结构，不看运行）
+  #    唯一能看出来的办法是 `uci export dhcp | grep '^config'`，
+  #    正确形态必须是 `config dhcp 'lan'`。
+  #
+  #    设备上的验证命令：
+  #      uci export dhcp | grep '^config'      # 期望看到 config dhcp 'lan'
+  #      grep dhcp-range /var/etc/dnsmasq.conf.*
+  if grep -qE "^[[:space:]]*set[[:space:]]+dhcp\.lan=(dnsmasq|'interface'|\"interface\")([[:space:]]|$)" \
+       "$R/etc/uci-defaults/99-tenda-custom"; then
+    bad_ "dhcp.lan 段类型被改坏 —— dnsmasq 只处理 config dhcp 类型，LAN 将不发 dhcp-range"
+  elif grep -qE "^[[:space:]]*set[[:space:]]+dhcp\.lan='dhcp'[[:space:]]*$" \
+       "$R/etc/uci-defaults/99-tenda-custom"; then
+    ok_ "dhcp.lan 段类型正确（set dhcp.lan='dhcp'）"
+  else
+    bad_ "找不到 set dhcp.lan='dhcp' —— 段类型是否正确无法判定，请人工确认"
+  fi
+
+  # ---- 危险命令守卫 ----
+  # AN8855AE 交换芯片下 /etc/init.d/network restart 会导致 LAN 失联、需断电，
+  # 预置文件里绝不能把它当成操作指引告诉用户。
+  if grep -qE "^[[:space:]]*#.*/etc/init\.d/network[[:space:]]+restart" \
+       "$R/etc/uci-defaults/99-tenda-custom" "$R/etc/config/network" 2>/dev/null; then
+    bad_ "预置文件里出现了 /etc/init.d/network restart —— 本机用它会 LAN 失联（见 README §8）"
+  else
+    ok_ "预置文件未出现 /etc/init.d/network restart"
+  fi
 fi
 
 # ---- 5. 必须不存在的包 -----------------------------------------------------

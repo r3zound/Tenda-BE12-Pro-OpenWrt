@@ -55,7 +55,11 @@ config interface 'wan'
 #   ⚠️ 账号密码留空，刷机后手工填写：
 #     uci set network.wan2.username='你的移动宽带账号'
 #     uci set network.wan2.password='你的移动宽带密码'
-#     uci commit network && /etc/init.d/network restart
+#     uci commit network && reload_config
+#   ⚠️ 必须用 reload_config，不要用 network restart（/etc/init.d/network 那条）。
+#      本机 AN8855AE 交换芯片在 SNAPSHOT 固件下对整栈软重置支持不良：
+#      整栈重启之后 LAN 口失联，必须断电才能恢复（见 README §8）。
+#      reload_config 是增量生效，安全。
 # -----------------------------------------------------------------------------
 config interface 'wan2'
 	option device 'lan3'

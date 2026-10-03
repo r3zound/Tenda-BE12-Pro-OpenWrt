@@ -5,7 +5,8 @@
 > 本文件回答「现在什么状态、接下来干什么、哪些坑不能再踩」。
 > `README.md` 回答「这是什么、硬件细节、网络设计、刷机步骤」。
 >
-> 最后更新：2026-10-03 · 对应提交 `c6caa27`
+> 最后更新：2026-10-03 · 内容对应 `main` 分支当前状态
+> （固件校验值见 §8，**只对标注了 Run 号的那一次有效**，换一次构建哈希就变）
 
 ---
 
@@ -18,7 +19,7 @@
 | **基线** | 官方 OpenWrt **mainline SNAPSHOT**，commit `3f26ab3d4d973fdbd3a1593a68e8186f5cc58dbd` |
 | **目标** | `mediatek/filogic` / `tenda_be12-pro`（MT7987A，512MB DDR4，128MB SPI-NAND） |
 | **当前状态** | ✅ 固件已构建并通过 24 项内容校验；⬜ **上机验证未开始**（唯一未完成项） |
-| **最新成功 CI** | [Run #13](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37023632916) · [Run #14](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37010440652) |
+| **最新成功 CI** | [Run #15](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37094280125) · [Run #14](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37038515704) |
 | **编译耗时** | 82 分钟（GitHub Actions） |
 | **CI 触发** | 手动 `workflow_dispatch` / 推 tag / 推 main / 每周定时 |
 
@@ -215,9 +216,9 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 
 ---
 
-## 5. ⚠️ 完整坑位清单（8 个，全部静默失败）
+## 5. ⚠️ 完整坑位清单（9 个，全部静默失败）
 
-**这八个坑的共同点：链路上没有任何一个环节会报错。**
+**这九个坑的共同点：链路上没有任何一个环节会报错。**
 形态都是「编译成功 → CI 绿 → 守卫过 → 固件里东西是错的」。
 
 完整成因与解法见 `README.md` §13.2，这里只列速查：
@@ -232,6 +233,59 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 | 6 | `<<UCI` vs `<<-UCI` | 首启脚本静默不执行 | 用 `<<-UCI` |
 | 7 | `rm -rf files` 删了构建素材 | make 到 install 才炸 | 删掉那行 |
 | 8 | 误删 `feeds install -a -p luci` | 整个 LuCI 消失 | 恢复该行 |
+| 9 | **uci batch 把段类型写坏** | **刷完 LAN 客户端拿不到 IP** | **`set <包>.<段>=<值>` 是赋类型，必须写 `'dhcp'`** |
+
+### 🔴 坑 9：uci batch 的段类型（2026-10-03 实机取证发现）
+
+**这是唯一一个「CI 全绿 + 24 项抽查全过 + `sysupgrade -T` 返回 0」却依然
+让设备不可用的坑。** 其余八个至少还有编译期或体积上的异常信号。
+
+```sh
+# ❌ Run #13~#15 用的写法
+set dhcp.lan=dnsmasq      # ← 这是「把 lan 段的类型改成 dnsmasq」
+set dhcp.lan='interface'  # ← 这是「把 lan 段的类型改成 interface」
+```
+
+**UCI 语义**：`set <包>.<段>=<值>` 是给**段赋类型**，不是赋选项值。
+真正的选项赋值是三段式 `set <包>.<段>.<选项>=<值>`。
+
+**为什么没被拦住**：
+
+| 检查 | 结果 |
+|---|---|
+| `uci batch` 退出码 | 0，无报错 |
+| 选项 `start` / `limit` 是否写进去 | ✅ 写进去了（所以回读校验报 4/4 通过） |
+| `verify-firmware.sh` 的 6 条 grep | ✅ 全过（它只找 `set dhcp.lan.start='100'` 这类选项语句） |
+| CI / 体积守卫 / 24 项抽查 | ✅ 全绿 |
+| `sysupgrade -T` | ✅ 返回 0（它只校验镜像结构与设备匹配，不看运行结果） |
+| `uci export dhcp`（唯一能看出来的） | ❌ `config interface 'lan'` ← 应该是 `config dhcp 'lan'` |
+
+**机理**：`/etc/init.d/dnsmasq` 第 1231 行是
+`config_foreach filter_dnsmasq dhcp dhcp_add` —— **只遍历类型为 `dhcp` 的段**。
+类型一旦变成 `interface`，LAN 段被整个跳过，`dhcp-range` 不生成，
+IPv4 DHCP 直接死掉（IPv6 SLAAC 可能还活着，所以更隐蔽：能看到路由器，
+但就是拿不到 v4 地址）。
+
+**修法**（已落地，两份 `99-tenda-custom` 都改了）：
+
+```sh
+set dhcp.lan='dhcp'          # 一行，幂等
+set dhcp.lan.interface='lan' # 以下都是正常的选项赋值
+```
+
+**验证过的三种方法**（任选其一，设备上就能做）：
+
+```sh
+uci export dhcp | grep '^config'          # 必须看到 config dhcp 'lan'
+grep dhcp-range /var/etc/dnsmasq.conf.*  # 必须有 set:lan,... 的行
+grep -c "^config dhcp " <(uci export dhcp)   # 必须是 2
+```
+
+> 已加入 `scripts/verify-firmware.sh` 作为回归守卫：
+> 检测 `set dhcp.lan=` 被写成 `dnsmasq`/`interface` 直接判失败。
+> 另加一道守卫：预置文件里出现 `/etc/init.d/network restart` 也判失败
+> （本机用它会 LAN 失联，见 §8）。
+
 
 ### 两条最容易重犯的
 
@@ -368,12 +422,14 @@ ref 语法：分支用 `;`，commit 用 `^`。
 
 | 项 | 值 |
 |----|----|
-| CI Run | [#13](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37023632916) · [#14](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37010440652) |
-| 提交 | `9e3e19a` / `c6caa27` |
-| 编译耗时 | 82 分钟 |
+| CI Run | [#15](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37094280125) · [#14](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37038515704) |
+| 提交 | `2dc401d` / `c6caa27` |
+| 编译耗时 | 82 分钟（#15 为 96 分钟，含等缓存） |
 | sysupgrade | 19,149,065 字节 |
-| sysupgrade SHA256 | `0dde4645833534268343f4c6b700d1285a2c535fc6f1e80379237c7279049538` |
-| initramfs SHA256 | `cca69926d841aff3689d354c03dae396f5f37572df93bc0d6938f80e32a24144` |
+| sysupgrade SHA256（**Run #15**） | `80e9b9e3cc50447eba47beb5e0bf2c62b6a24df59b7948d4f0055ed52a61de9b` |
+| initramfs SHA256（**Run #15**） | `75d2c51dbb314c4df10d447093a8da094e149c13bc201714c993142750dae037` |
+| sysupgrade SHA256（Run #14） | `c74cae8719dee983657cce0ef074d03469b581e34234de0e03425b2a100c6120` |
+| initramfs SHA256（Run #14） | `e3de2ee5ba2dcb12b57654a26e565d1f9de24a5a602797041142d63a24e81b83` |
 | OpenWrt 基线 | `3f26ab3d4d973fdbd3a1593a68e8186f5cc58dbd` |
 | 内核 | 6.18.54（用户当前 ImmortalWrt 是 6.18.52） |
 | rootfs（squashfs） | 13 MB |
@@ -430,8 +486,12 @@ ref 语法：分支用 `;`，commit 用 `^`。
 bash -n scripts/*.sh scripts/lib/*.sh
 sh  -n files/etc/uci-defaults/99-tenda-custom
 
-# 2. feeds.conf 能生成且通过校验（用假 openwrt 目录即可）
-./scripts/gen-feeds.sh <含 .git 的空目录>
+# 2. feeds.conf 能生成且通过校验
+#    ⚠️ 必须是**真 git 仓库**且有 origin remote —— 脚本会 `git fetch` 去检出
+#    OpenWrt HEAD。只 mkdir 一个空的 .git 目录会在「检出 OpenWrt HEAD」这步失败。
+git init /tmp/fakeowrt && cd /tmp/fakeowrt && git remote add origin \
+    https://github.com/openwrt/openwrt.git && git commit -q --allow-empty -m init
+cd - >/dev/null && ./scripts/gen-feeds.sh /tmp/fakeowrt
 
 # 3. 预置文件双份同步
 diff -r files package/tenda-preset/files && echo "✅ 已同步"
@@ -440,7 +500,14 @@ diff -r files package/tenda-preset/files && echo "✅ 已同步"
 grep -rInE "password[[:space:]]*=[[:space:]]*['\"][^'\"]+" \
      --include='*' . | grep -v '^\./\.git/' | grep -v "password ''"
 
-# 5. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
+# 5. 预置文件里没有危险命令（network restart 会让本机 LAN 失联）
+grep -rn "/etc/init.d/network restart" files/ package/ && echo "❌ 见上面"
+
+# 6. uci batch 的段类型没有被写坏（坑 9）
+grep -nE "^\s*set\s+dhcp\.lan=" files/etc/uci-defaults/99-tenda-custom
+#    期望只有一行，且是  set dhcp.lan='dhcp'
+
+# 7. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
 ./scripts/verify-firmware.sh <含 bin/targets/mediatek/filogic/ 的目录>
 ```
 
@@ -452,3 +519,6 @@ grep -rInE "password[[:space:]]*=[[:space:]]*['\"][^'\"]+" \
   → 改动完全不生效，且**没有任何报错**
 - 在 `build.yml` 里「顺手清理」某行命令
   → 参见坑 7、8
+- 在 `uci batch` 里写 `set <包>.<段>=<值>` 却以为是在赋选项值
+  → 参见坑 9；`verify-firmware.sh` 现在会拦，但**别等它拦**
+

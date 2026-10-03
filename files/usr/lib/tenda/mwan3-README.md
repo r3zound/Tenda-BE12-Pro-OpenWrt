@@ -23,8 +23,13 @@ sh /usr/lib/tenda/install-mwan3.sh --uninstall   # 卸载
 uci set network.wan2.username='你的移动宽带账号'
 uci set network.wan2.password='你的移动宽带密码'
 uci commit network
-/etc/init.d/network restart
+reload_config
 ```
+
+> ⚠️ 最后一行必须是 `reload_config`，**不要**换成 `network restart`
+> （即 `/etc/init.d/network` 那条）。本机 AN8855AE 交换芯片在 SNAPSHOT
+> 固件下对整栈软重置支持不良：整栈重启之后 LAN 口失联，必须断电才能恢复
+> （见 `README.md` §8）。`reload_config` 是增量生效，安全。
 
 确认两条 WAN 都能独立上网：
 

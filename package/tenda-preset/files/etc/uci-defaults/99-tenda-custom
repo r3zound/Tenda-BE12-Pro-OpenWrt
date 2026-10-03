@@ -53,9 +53,15 @@ switch_mirror() {
 # -----------------------------------------------------------------------------
 apply_base_config() {
 	# ---- DHCP：池 .100-.199，租期 12h，并指向预置网关 ----
+	# ⚠️⚠️ `set <包>.<段>=<值>` 在 uci batch 里是**给段赋类型**，不是赋选项值。
+	#    这里必须写 'dhcp'。写成 'interface'（或中间那句 =dnsmasq）会把 lan 段的
+	#    类型改掉，而 /etc/init.d/dnsmasq 只遍历 `config_foreach ... dhcp`，
+	#    于是 LAN 段被整个跳过、不生成 dhcp-range —— 刷完客户端拿不到 IP。
+	#    这类错误没有任何报错：uci batch 成功、选项也真的写进去了、脚本末尾的
+	#    回读校验照样报 4/4 通过，只有运行后才知道 LAN 不发地址。
+	#    验证方法：uci export dhcp | grep '^config' —— 必须看到 config dhcp 'lan'
 	uci batch <<-'UCI' 2>/dev/null || warn "uci batch 部分条目失败（可忽略）"
-		set dhcp.lan=dnsmasq
-		set dhcp.lan='interface'
+		set dhcp.lan='dhcp'
 		set dhcp.lan.interface='lan'
 		set dhcp.lan.start='100'
 		set dhcp.lan.limit='100'
