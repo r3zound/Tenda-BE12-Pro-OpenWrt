@@ -354,6 +354,43 @@ EOF
     bad_ "固件里没有 aurora 的 header.ut —— 主题装了也渲染不出来"
   fi
 
+  # ---- apk 软件源守卫（第 12 个坑）----
+  # 绝大多数「OpenWrt 镜像站」**只同步 releases/，不同步 snapshots/**。
+  # 清华 TUNA / 北外 BFSU / 南大 NJU / 上交 SJTUG / 中科院 ISCAS / 阿里云 aliyn
+  # 全都不含 snapshots 目录 —— 把它们填进 distfeeds.list 会得到 HTTP 404，
+  # apk 表现为 "unexpected end of file" + "N unavailable"，一个包装不上。
+  # CERNET 镜像帮助页原话：「USTC 提供了对 snapshots 的反代」。
+  #
+  # 旧版默认 https://mirrors.aliyun.com/openwrt 已造成真实故障（Run #15~18 全中）。
+  # 注意检查方式：必须**排除注释行和 bad 清单自身**。
+  #   - 注释里会写「阿里云 404」当反面教材，那是说明文字不是源；
+  #   - `local bad="... mirrors.aliyun.com/openwrt ..."` 这一行正是**要替换掉的目标**，
+  #     它必须存在（守卫 3 还要查它），如果一并判死就成了「修好也过不了」的死锁。
+  if grep -vE "^[[:space:]]*(#|local bad=)" "$TSC" 2>/dev/null \
+     | grep -qE "mirrors\.(aliyun|tuna\.tsinghua|bfsu)\.|mirror\.(nju|sjtug\.sjtu|iscas\.ac)\."; then
+    bad_ "首启脚本里出现了没有 snapshots 的镜像站（aliyun/TUNA/BFSU/NJU/SJTUG/ISCAS）—— 装包会全 404（坑 12）"
+  else
+    ok_ "未把不含 snapshots 的镜像站当源使用（注释与 bad 清单除外）"
+  fi
+  # 默认必须是 USTC
+  if grep -qE "^[[:space:]]*local mirror=\"\$\{TENDA_MIRROR:-https://mirrors\.ustc\.edu\.cn/openwrt\}\"" "$TSC" 2>/dev/null; then
+    ok_ "默认软件源为 USTC 中科大（唯一提供 snapshots 反代的国内站）"
+  else
+    bad_ "默认软件源不是 mirrors.ustc.edu.cn/openwrt —— 检查 TENDA_MIRROR 的默认值"
+  fi
+  # 不能只替换 downloads.openwrt.org：已经写成 aliyun 的文件永远换不掉
+  if grep -qE "local bad=\"[^\"]*mirrors\.aliyun\.com/openwrt" "$TSC" 2>/dev/null; then
+    ok_ "坏源清单（bad）含阿里云 —— 能救回已被写坏的 distfeeds.list"
+  else
+    bad_ "switch_mirror 的 bad 清单里没有阿里云 —— 已被写坏的源永远换不掉"
+  fi
+  # 换完必须回读校验，不能只信 sed 退出码（坑 9/10/11 共同教训）
+  if grep -qE "grep -qE \"\\\$\{bad\}\" \"\\\$repos\"" "$TSC" 2>/dev/null; then
+    ok_ "换源后有回读校验（确认坏源真的没了）"
+  else
+    bad_ "换源缺少回读校验 —— sed 没匹配上也会报成功（坑 12 的第二个静默点）"
+  fi
+
   # ---- 危险命令守卫 ----
   # AN8855AE 交换芯片下 /etc/init.d/network restart 会导致 LAN 失联、需断电，
   # 预置文件里绝不能把它当成操作指引告诉用户。

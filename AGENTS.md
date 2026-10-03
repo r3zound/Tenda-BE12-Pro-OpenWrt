@@ -162,7 +162,7 @@ Tenda-BE12-Pro-OpenWrt/
 | `configs/base.config` | kconfig 片段 | **不要手工改 `.config`**，改这里后跑 `gen-config.sh` || `files/` | 预置文件源 | 改完**必须**同步到 `package/tenda-preset/files/`，否则不生效 |
 | `package/tenda-preset/Makefile` | 预置配置包 | 只直接装 `/etc/config/network`；其余走 `uci batch`（见 §5 坑 3） |
 | `files/etc/config/network` | 双 WAN 接口划分 | **唯一**随包安装的配置文件 |
-| `files/etc/uci-defaults/99-tenda-custom` | 首启脚本 | 见 §6 heredoc 陷阱；防火墙 zone 用动态索引 |
+| `files/etc/uci-defaults/99-tenda-custom` | 首启脚本 | 见 §6 heredoc 陷阱；防火墙 zone 用动态索引；`switch_mirror` 默认源必须 USTC（见 §5 坑 12） |
 | `scripts/gen-feeds.sh` | feeds.conf 生成 | ⚠️ 无引号 heredoc 内**禁用反引号和裸 `#`** |
 | `scripts/verify-firmware.sh` | 内容抽查 | 用 `grep -qF`（固定串），**别用 `grep -q`** |
 | `.github/workflows/build.yml` | CI | ⚠️ 步骤 9 和 11 各有一行不能删（见 §5 坑 7、8） |
@@ -267,9 +267,9 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 
 ---
 
-## 5. ⚠️ 完整坑位清单（11 个，全部静默失败）
+## 5. ⚠️ 完整坑位清单（12 个，全部静默失败）
 
-**这九个坑的共同点：链路上没有任何一个环节会报错。**
+**这十二个坑的共同点：链路上没有任何一个环节会报错。**
 形态都是「编译成功 → CI 绿 → 守卫过 → 固件里东西是错的」。
 
 完整成因与解法见 `README.md` §13.2，这里只列速查：
@@ -465,6 +465,86 @@ const th = Object.keys(uci.get('luci','themes') || {}).sort();
 > **A** 从零开始（段不存在）→ 5 个主题 + aurora 为默认；
 > **B** 幂等重跑 → md5 完全一致；
 > **C** aurora 目录缺失 → 自动回退 argon（4 个），恢复后回到 5 个 + aurora。
+
+
+### 坑 12：软件源指向没有 snapshots 的镜像站 → 一个包装不上
+
+**已造成真实故障**：Run #15 ~ #18 连续四个固件出厂就带
+`https://mirrors.aliyun.com/openwrt`，用户在设备上 `apk add` 任何东西都失败。
+
+关键在于：**这个坑跟「源慢」完全不是一回事，它是 404 —— 索引根本不存在。**
+
+```
+apk update
+  WARNING: ... /targets/mediatek/filogic/packages/packages.adb: unexpected end of file
+  ERROR: wget: exited with error 8
+  4 unavailable, 0 stale; 221 distinct packages available
+```
+
+`221` 是残索引（只有固件自带的那部分），不是可用仓库。
+
+#### 为什么阿里云会 404
+
+绝大多数「OpenWrt 镜像站」**只同步 `releases/`，不同步 `snapshots/`**。
+CERNET 镜像帮助页（`help.mirrors.cernet.edu.cn/openwrt/`）写得很清楚：
+
+> 部分镜像站(例如 TUNA/BFSU)并不包含 snapshots 镜像，**USTC 提供了对 snapshots 的反代**。
+
+2026-10-03 实测 `snapshots/packages/aarch64_cortex-a53/base/packages.adb`：
+
+| 镜像站 | HTTP | 说明 |
+|--------|------|------|
+| `downloads.openwrt.org` | ✅ 200 / 115511 B | 官方，国内直连慢且不稳 |
+| **`mirrors.ustc.edu.cn/openwrt`** | ✅ **200 / 115511 B** | **中科大，唯一提供 snapshots 反代的国内站** |
+| `mirrors.aliyun.com/openwrt` | ❌ 404 | **无 snapshots**（旧默认，坑 12 元凶） |
+| `mirrors.tuna.tsinghua.edu.cn/openwrt` | ❌ 404 | 无 snapshots（网上教程最爱推它） |
+| `mirror.nju.edu.cn` / `mirrors.bfsu.edu.cn` / `mirrors.sjtug.sjtu.edu.cn` / `mirror.iscas.ac.cn` | ❌ 404 | 无 snapshots |
+| `mirrors.huaweicloud.com/openwrt` | ⚠️ 200 但体积异常小（12109 B，四条路径体积相同） | 是跳转页/占位，不是真索引 |
+
+> ⚠️ **网上（包括 AI 生成的）绝大多数「OpenWrt 国内换源」教程推荐的清华源，
+> 对 SNAPSHOT 固件一律无效。** 清华只镜像 releases。
+
+#### 关于用户列出的那 5 个第三方源
+
+**没有一个能用**。X-Wrt / Lienol / coolsnowwolf-lede / iStoreOS / kiddin9-Kwrt
+都是 **opkg 时代（OpenWrt 23.05 / 24.10 系）的 `Packages.gz` 格式**，
+而本机是 **apk v3.0.5 + `packages.adb` + 内核 6.18.54**。
+混用会直接把 apk 索引搞坏。要国内 LuCI 插件的话，正确做法是
+**在 SNAPSHOT 源之外另加 customfeeds**，而不是换掉 distfeeds。
+
+#### 修法
+
+`switch_mirror()` 改了三处，每处都对应一个静默点：
+
+1. **默认值换成 USTC**：`${TENDA_MIRROR:-https://mirrors.ustc.edu.cn/openwrt}`
+2. **不只替换 `downloads.openwrt.org`**。旧版只 `sed` 这一个域名，
+   于是**已经写成 aliyun 的文件永远换不掉** —— sed 匹配不到、返回 0、
+   日志照样打「已切换」。现在维护一个 `bad` 清单，遍历替换：
+   ```sh
+   local bad="downloads.openwrt.org mirrors.aliyun.com/openwrt \
+              mirrors.tuna.tsinghua.edu.cn/openwrt mirrors.bfsu.edu.cn/openwrt \
+              mirror.nju.edu.cn/openwrt mirror.sjtug.sjtu.edu.cn/openwrt \
+              mirror.iscas.ac.cn/openwrt"
+   for b in $bad; do sed -i "s|https://${b}|${mirror}|g" "$repos"; done
+   ```
+3. **换完回读校验 + 统计包数**。`apk update` 返回 0 **不代表索引里有东西**，
+   所以额外用 `apk list | wc -l > 1000` 兜底。
+
+> 已加入 `scripts/verify-firmware.sh` 4 条守卫。写守卫时踩了一个小陷阱：
+> 检查「有没有引用坏镜像」时**必须排除注释行和 `local bad=` 那一行** ——
+> 注释里写了「阿里云 404」当反面教材，`bad` 清单里更是必须出现阿里云
+> （否则救不回已写坏的源）。不排除的话就成了「修好也过不了」的死锁。
+
+#### 实测验证（2026-10-03，设备 192.168.100.254）
+
+- 四条 feed 从路由器实测**全部 200、亚秒级**（filogic 15509 B / base 115511 B /
+  luci 400260 B / packages 760832 B）
+- `apk update` → **rc=0，9185 distinct packages available**
+- 端到端：`apk add htop` → 装上并跑起来（`htop 3.5.1`）→ `apk del htop` → 回到 221 包
+- 沙箱跑 `switch_mirror` 逻辑，5 个输入场景全过：官方源 / 阿里云源 /
+  清华源 / 已是 USTC（幂等无副作用）/ 混合源
+- **附带收获**：USTC 索引里的 LuCI 版本是 `26.274.67354~aa3d488`，
+  和本机固件的 LuCI **同一个 commit**，说明 snapshot 尚未从我们的构建点漂走
 
 
 ### 两条最容易重犯的
@@ -714,7 +794,26 @@ grep -qE "set luci\.themes\.[A-Za-z0-9_]*-" $F \
   && echo "❌ luci.themes 选项名带连字符，uci batch 会静默丢弃"
 grep -q 'template/themes/\$t' $F || echo "❌ 主题探测没查 LuCI 模板目录"
 
-# 9. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
+# 9. apk 软件源没被改坏（§5 坑 12）—— 本机是 SNAPSHOT，只能用有 snapshots 的源
+F=files/etc/uci-defaults/99-tenda-custom
+grep -nE "^[[:space:]]*local mirror=" $F \
+  | grep -q 'mirrors\.ustc\.edu\.cn/openwrt' \
+  || echo "❌ 默认源不是 USTC —— 换回阿里云/清华的话 SNAPSHOT 全 404，一个包装不上"
+# 检查「有没有把坏源当源用」时，必须排除注释行和 bad 清单自身
+grep -vE "^[[:space:]]*(#|local bad=)" $F \
+  | grep -qE "mirrors\.(aliyun|tuna\.tsinghua|bfsu)\.|mirror\.(nju|sjtug\.sjtu|iscas\.ac)\." \
+  && echo "❌ 把没有 snapshots 的镜像站当源用了（坑 12）"
+# bad 清单必须含阿里云，否则已写坏的源永远救不回来
+grep -qE 'local bad="[^"]*mirrors\.aliyun\.com/openwrt' $F \
+  || echo "❌ bad 清单缺阿里云 —— 已被写坏的 distfeeds.list 换不掉"
+# 换完必须有回读校验（sed 没匹配上也会返回 0）
+grep -qE 'if grep -qE "\$\{bad\}" "\$repos"; then' $F \
+  || echo "❌ 换源缺回读校验（坑 12 的第二个静默点）"
+# 包数兜底：apk update 返回 0 不代表索引有内容
+grep -q 'apk list 2>/dev/null | wc -l' $F \
+  || echo "❌ 没有包数兜底 —— 残索引也会让 apk update 返回 0"
+
+# 10. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
 ./scripts/verify-firmware.sh <含 bin/targets/mediatek/filogic/ 的目录>
 ```
 
@@ -732,4 +831,7 @@ grep -q 'template/themes/\$t' $F || echo "❌ 主题探测没查 LuCI 模板目�
   → 参见坑 7、8
 - 在 `uci batch` 里写 `set <包>.<段>=<值>` 却以为是在赋选项值
   → 参见坑 9；`verify-firmware.sh` 现在会拦，但**别等它拦**
+- 换软件源时**只考虑 releases**（照抄网上的「OpenWrt 换源教程」）
+  → 参见坑 12；本机是 SNAPSHOT，清华/阿里云/南大/上交全是 404，
+  **只有中科大 USTC 提供 snapshots 反代**
 
