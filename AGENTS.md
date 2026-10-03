@@ -706,6 +706,64 @@ vermagic 逐字节相同，所以模块**能加载**：
 源和固件在同一个 build root 产出，配置哈希天然一致。
 
 
+### 坑 15：固件文件名加后缀，另外三个脚本会悄悄失效
+
+给 `.bin` 加上 `-YYYYMMDD.HHMM` 后缀后，原本**硬编码镜像名**的 4 处
+（`build.sh` / `size-guard.sh` / `verify-firmware.sh` / `build.yml` 的 release）
+会同时「文件不存在」。后果分两种，都很隐蔽：
+
+- `size-guard.sh` 找不到文件 → **静默跳过体积检查**，固件胖到刷不进去也没人拦
+- `verify-firmware.sh` 找不到文件 → `exit 2`，让八十多分钟的构建白跑
+
+**统一走 `find_sysupgrade_bin()`**（`scripts/lib/stamp.sh`）：带时间戳的优先，
+退回旧命名，最后兜底匹配任意 `*sysupgrade*.bin`。这样加不加后缀都找得到。
+
+#### 版本串挂在哪个字段上
+
+`package/base-files/files/etc/openwrt_release` 的模板是：
+
+```
+DISTRIB_DESCRIPTION='%D %V %C'
+```
+
+LuCI「系统 → 系统」显示的就是它。`%C` 来自 **`CONFIG_VERSION_CODE`**
+（`include/version.mk:33` `VERSION_CODE:=$(if $(VERSION_CODE),$(VERSION_CODE),$(REVISION))`），
+不设时回退成 git revision —— 这就是为什么以前只看到 `r1-9b95be917b`，看不到构建时间。
+
+`CONFIG_VERSION_CODE` 是 OpenWrt 官方留给二次编译方的字段，**同一次构建内**
+还会写进 `/etc/openwrt_version`。
+
+#### 三个必须知道的约束
+
+1. **`CONFIG_VERSION_NUMBER` 不能动** —— 它进 `DISTRIB_RELEASE`，
+   会影响 apk 的包版本比较
+2. **`CONFIG_VERSION_CODE_FILENAMES` 必须钉死为 `n`**
+   —— 它的 Kconfig 默认是 **`y`**（`package/base-files/image-config.in:280`），
+   开了以后 `include/image.mk:49` 的 `IMG_PREFIX_VERCODE` 会把版本码作为
+   **前缀**插进文件名，和我们自己的**后缀**撞车，变成
+   `r1-...-20261004.0031-openwrt-...-sysupgrade-20261004.0031.bin` 两头都有日期
+3. **版本串只能用 `[0-9a-z.-]`** —— 它同时写进 `/etc/openwrt_version`，
+   下游有 shell 在读，带空格会被拆成两个参数
+
+#### revision 必须调用 OpenWrt 自己的 getver.sh
+
+`scripts/getver.sh` 的逻辑很特殊：先数 `ee53a240..HEAD` 的提交数当 `r<N>`，
+再拼上游分歧点的短 hash。**手写一套 `git describe` 十有八九对不上**，
+而版本串里 hash 对不上比没有 hash 更糟 —— 看起来像真的，其实是假的。
+
+正确做法是直接调用它（`include/toplevel.mk:16` 就是这么做的）：
+
+```sh
+cd "$SRC" && TOPDIR="$SRC" sh "$SRC/scripts/getver.sh"
+```
+
+#### 时间戳在构建机上算一次，烧死进固件
+
+不是开机时按设备时钟算。所以改路由器时区不会让版本号变。
+CI 里由 `scripts/build-stamp.sh` 算好后经 `$GITHUB_ENV` 传给后续所有步骤 ——
+**全程必须同一个值**，否则会出现「版本串写 00:31、文件名写 00:32」这种没法排查的错。
+
+
 ### 两条最容易重犯的
 
 **坑 8 的机制**（务必理解）：
@@ -1015,7 +1073,35 @@ grep -q "apk search -q '\^kmod-nft-tproxy\\\$'" $F \
 # 定义了就得调用，否则等于没写
 grep -q '^add_kmods_feed$' $F || echo "❌ 定义了却没在首启流程里调用"
 
-# 12. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
+# 12. 版本标识没被改坏（含固件文件名时间戳）
+F=files/etc/uci-defaults/99-tenda-custom
+# .bin 加了时间戳之后，原先 4 处硬编码的镜像名会同时失效，
+# 而且体积守卫/内容抽查会**静默跳过**（找不到文件就直接退出）。
+# 统一走 find_sysupgrade_bin，带不带时间戳都找得到。
+# ⚠️ 过滤时必须先去掉行首空白再判断是不是注释 ——
+#    缩进过的注释行也会提到 "sysupgrade.bin"，按 "行首 #" 过滤会误报。
+grep -rIn 'sysupgrade\.bin' scripts/ .github/ \
+  | sed 's/^[^:]*:[0-9]*://' | grep -vE '^[[:space:]]*#' \
+  | grep -v 'find_sysupgrade_bin' | grep -v 'squashfs-sysupgrade\*' \
+  | grep -v 'squashfs-sysupgrade\.\.\.' \
+  && echo "❌ 还有硬编码的镜像名（坑 15）"
+# 版本串和文件名必须是同一个时间戳：CI 里由 build-stamp.sh 算一次经 GITHUB_ENV 传下去
+grep -q 'build-stamp.sh.*GITHUB_ENV\|tee -a "\$GITHUB_ENV"' .github/workflows/build.yml \
+  || echo "❌ CI 没有把时间戳导出到 GITHUB_ENV（各步骤会各算各的）"
+grep -q 'stamp-firmware.sh' .github/workflows/build.yml \
+  || echo "❌ CI 里没调 stamp-firmware.sh（文件名不会带日期）"
+# CONFIG_VERSION_CODE_FILENAMES 必须钉死为 n：
+# 它默认是 y，开了会给 .bin 加**前缀**，和我们的**后缀**撞车变成两头都有日期
+grep -q 'CONFIG_VERSION_CODE_FILENAMES is not set' scripts/gen-config.sh \
+  || echo "❌ 没钉死 CONFIG_VERSION_CODE_FILENAMES=n（坑 15）"
+# 版本串里不能有空格/括号/斜杠：会写进 /etc/openwrt_version，下游有 shell 在读
+. scripts/lib/stamp.sh
+[[ "$(build_version r1-abc "$(bj_stamp)")" =~ ^[0-9a-zA-Z._-]+$ ]] \
+  || echo "❌ 版本串含不安全字符（空格/括号/斜杠）"
+[[ "$(bj_stamp)" =~ ^[0-9]{8}\.[0-9]{4}$ ]] \
+  || echo "❌ 时间戳格式不是 YYYYMMDD.HHMM"
+
+# 13. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
 ./scripts/verify-firmware.sh <含 bin/targets/mediatek/filogic/ 的目录>
 ```
 
@@ -1041,4 +1127,8 @@ grep -q '^add_kmods_feed$' $F || echo "❌ 定义了却没在首启流程里调�
   因为 kmods 那一行被 `CONFIG_BUILDBOT` 门控。
   另外 **USTC 对 snapshots 只是 301 重定向到官方站，没有任何加速作用**，
   选它的唯一理由是它不返回 404 —— 凡是要 `curl` 镜像站的地方都得带 `-L`
+- 给固件文件名加了后缀，却忘了**另外 3 个脚本还在按旧名字找镜像**
+  → 参见坑 15；`size-guard.sh` 找不到文件会静默跳过体积检查，
+  `verify-firmware.sh` 找不到会直接 exit 2 让八十多分钟的构建白跑。
+  凡是「定位固件文件」的地方一律走 `find_sysupgrade_bin`，不要写死名字
 

@@ -24,6 +24,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/stamp.sh
+. "$ROOT/scripts/lib/stamp.sh"
 SRC="${1:-$ROOT/openwrt}"
 BIN="$SRC/bin/targets/mediatek/filogic"
 TMPD="$(mktemp -d)"
@@ -45,8 +47,15 @@ USQ="$(source "$ROOT/scripts/lib/ensure-unsquashfs.sh" && _ensure)" || {
 echo "  unsquashfs: $USQ"
 
 # ---- 2. 取出 rootfs 分片 ---------------------------------------------------
-IMG="$BIN/openwrt-mediatek-filogic-tenda_be12-pro-squashfs-sysupgrade.bin"
-[ -f "$IMG" ] || { echo "${RED}❌ 未找到镜像: $IMG${RST}"; exit 2; }
+# ⚠️ 用解析函数而不是写死文件名 —— stamp-firmware.sh 会加 -YYYYMMDD.HHMM 后缀。
+#    写死的后果特别隐蔽：这里「找不到文件」就 exit 2，
+#    而 build.yml 里这一步失败会让整轮固件白跑八十多分钟。
+IMG="$(find_sysupgrade_bin "$BIN")" || {
+  echo "${RED}❌ 未找到 sysupgrade 镜像: $BIN${RST}"
+  echo "   目录里现有："; ls -1 "$BIN" 2>/dev/null | sed "s/^/     /"
+  exit 2
+}
+echo "  镜像: $(basename "$IMG")"
 
 tar -xf "$IMG" -C "$TMPD" 2>/dev/null
 ROOTFS="$(find "$TMPD" -type f -name root 2>/dev/null | head -1)"

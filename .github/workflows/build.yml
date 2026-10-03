@@ -88,6 +88,17 @@ jobs:
             | while IFS='=' read -r k v; do printf "  %-28s %s\n" "$k" "$v"; done
 
       # ---------------------------------------------------------------------
+      - name: 生成构建时间戳（北京时间）
+        run: |
+          # ⚠️ 必须排在**所有**会用到它的步骤之前，而且**全程只算一次**。
+          #    版本串（CONFIG_VERSION_CODE）和 .bin 文件名后缀必须是同一个值，
+          #    各算各的会出现「版本串写 00:31、文件名写 00:32」这种没法排查的错。
+          #    经 GITHUB_ENV 传给后续所有步骤。
+          ./scripts/build-stamp.sh "$OPENWRT_SRC" | tee -a "$GITHUB_ENV"
+          echo "  LuCI 系统页会显示: OpenWrt SNAPSHOT $TENDA_BUILD_VERSION"
+          echo "  .bin 文件名会变成: ...-squashfs-sysupgrade-$TENDA_BUILD_STAMP.bin"
+
+      # ---------------------------------------------------------------------
       - name: 生成 feeds.conf（锁定 commit）
         run: |
           chmod +x scripts/*.sh
@@ -293,13 +304,26 @@ jobs:
           }
 
       # ---------------------------------------------------------------------
+      - name: 固件文件名加时间戳 ⚠️
+        run: |
+          # ⚠️ 必须排在「生成校验和」「体积守卫」「内容抽查」**之前** ——
+          #    这三个都按文件名找镜像，改名之后再算才对得上。
+          #    这也是为什么 size-guard.sh / verify-firmware.sh 里
+          #    原本写死的镜像名换成了 find_sysupgrade_bin（带不带时间戳都找得到）。
+          ./scripts/stamp-firmware.sh "$OPENWRT_SRC" "$TENDA_BUILD_STAMP"
+
+      # ---------------------------------------------------------------------
       - name: 记录构建信息
         run: |
           cd openwrt
           {
             echo "variant: ${{ inputs.variant || 'main' }}"
             echo "github_run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            echo "built_at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "built_at: $TENDA_BUILD_READABLE   # 北京时间 UTC+8"
+            echo "built_at_utc: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "build_stamp: $TENDA_BUILD_STAMP"
+            echo "version_code: $TENDA_BUILD_VERSION"
+            echo "openwrt_revision: $TENDA_BUILD_REV"
             echo "runner: $(uname -srm)"
             echo "openwrt_commit: $(git rev-parse HEAD)"
             echo ""
@@ -445,11 +469,20 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            openwrt/bin/targets/mediatek/filogic/openwrt-mediatek-filogic-tenda_be12-pro-squashfs-sysupgrade.bin
+            # ⚠️ 用通配符，不要写死文件名 ——
+            #    stamp-firmware.sh 已经给镜像名加了 -YYYYMMDD.HHMM 后缀。
+            #    写死的话 release 会传了个寂寞，而且「文件不存在」在
+            #    action-gh-release 里不一定报得清楚。
+            openwrt/bin/targets/mediatek/filogic/*squashfs-sysupgrade*.bin
             openwrt/bin/targets/mediatek/filogic/sha256sums
             openwrt/bin/targets/mediatek/filogic/config.buildinfo
           body: |
             ## Tenda BE12 Pro 固件 ${{ github.ref_name }}
+
+            **构建时间（北京时间）**：${{ env.TENDA_BUILD_READABLE }}
+            **版本标识**：`${{ env.TENDA_BUILD_VERSION }}`
+            **CI 运行**：[${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            **上游 revision**：`${{ env.TENDA_BUILD_REV }}`
 
             **校验和**
             ```

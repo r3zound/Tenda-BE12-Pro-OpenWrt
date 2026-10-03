@@ -36,13 +36,22 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/stamp.sh
+. "$ROOT/scripts/lib/stamp.sh"
 SRC="${1:-$ROOT/openwrt}"
 VARIANT="${2:-default}"
 BIN="$SRC/bin/targets/mediatek/filogic"
 TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
 
-IMG="$BIN/openwrt-mediatek-filogic-tenda_be12-pro-squashfs-sysupgrade.bin"
+# ⚠️ 不要写死文件名。stamp-firmware.sh 会给镜像名加 -YYYYMMDD.HHMM 后缀，
+#    写死的话这里会「文件不存在」然后**静默跳过体积检查** ——
+#    固件胖到刷不进去也没人拦。
+IMG="$(find_sysupgrade_bin "$BIN")" || {
+	echo "❌ 找不到 sysupgrade 镜像: $BIN"
+	echo "   目录里现有：" && ls -1 "$BIN" 2>/dev/null | sed 's/^/     /'
+	exit 1
+}
 
 # ---- 阈值 ------------------------------------------------------------------
 # UBI 分区 90MB。rootfs 占用后剩下的给 overlay。

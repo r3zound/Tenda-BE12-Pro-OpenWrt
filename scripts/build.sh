@@ -16,11 +16,23 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/stamp.sh
+. "$ROOT/scripts/lib/stamp.sh"
 SRC="${OPENWRT_SRC:-$ROOT/openwrt}"
 VARIANT="${VARIANT:-default}"
 JOBS="$(nproc 2>/dev/null || echo 4)"
 DL_ONLY=0
 CLEAN=0
+
+# 构建时间戳：全程只算这一次。
+# ⚠️ 必须在**任何一步之前**算好并固定下来 —— 版本串（CONFIG_VERSION_CODE）
+#    和文件名后缀必须是同一个值。gen-config.sh 和 stamp-firmware.sh 都会
+#    优先用这里的 TENDA_BUILD_STAMP，避免各算各的。
+if [ -z "${TENDA_BUILD_STAMP:-}" ]; then
+  TENDA_BUILD_STAMP="$(bj_stamp)"
+  [ -n "$TENDA_BUILD_STAMP" ] || { echo "❌ 算不出北京时间戳"; exit 1; }
+fi
+export TENDA_BUILD_STAMP
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; CYN=$'\033[36m'; RST=$'\033[0m'
 
@@ -188,13 +200,22 @@ make -j"$JOBS" V=s || die "编译失败"
 step "记录构建信息"
 {
   echo "variant: $VARIANT"
-  echo "built_at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  echo "built_at: $(bj_stamp_readable)   # 北京时间 UTC+8"
+  echo "built_at_utc: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  echo "build_stamp: $TENDA_BUILD_STAMP"
   echo "host: $(uname -srm)"
   echo "openwrt_commit: $(git rev-parse HEAD)"
   echo "feeds_conf:"; sed 's/^/  /' feeds.conf
   echo "config:"; sed 's/^/  /' .config
 } > "$SRC/bin/targets/mediatek/filogic/config.buildinfo"
 ok "config.buildinfo 已生成"
+
+# ---- 7.5 固件文件名加时间戳 ------------------------------------------------
+# ⚠️ 必须排在「生成校验和」和「体积守卫」**之前** ——
+#    这两个都按 *.bin / 固定名字找镜像，改名之后再算才对得上。
+step "固件文件名加时间戳"
+"$ROOT/scripts/stamp-firmware.sh" "$SRC" \
+  || die "给固件文件名加时间戳失败（详见上方输出）"
 
 # ---- 8. 校验和 -------------------------------------------------------------
 step "生成校验和"
@@ -206,7 +227,11 @@ step "体积守卫"
 "$ROOT/scripts/size-guard.sh" "$SRC" "$VARIANT" || die "体积超限，构建判定失败（详见上方排行）"
 
 # ---- 完成 ------------------------------------------------------------------
-IMG="$SRC/bin/targets/mediatek/filogic/openwrt-mediatek-filogic-tenda_be12-pro-squashfs-sysupgrade.bin"
+# ⚠️ 用解析函数拿镜像名，不要写死 —— 刚加完时间戳，名字已经不是原来那个了。
+# shellcheck source=lib/stamp.sh
+. "$ROOT/scripts/lib/stamp.sh"
+IMG="$(find_sysupgrade_bin "$SRC/bin/targets/mediatek/filogic")" \
+  || die "构建结束却找不到 sysupgrade 镜像"
 echo
 echo "═══════════════════════════════════════════════════════════"
 echo "${GRN}  构建完成${RST}"

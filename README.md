@@ -38,10 +38,29 @@ curl -X POST -H "Authorization: token <你的PAT>" \
 产物在 `bin/targets/mediatek/filogic/`：
 
 ```
-openwrt-mediatek-filogic-tenda_be12-pro-squashfs-sysupgrade.bin
+openwrt-mediatek-filogic-tenda_be12-pro-squashfs-sysupgrade-YYYYMMDD.HHMM.bin
 sha256sums
 config.buildinfo
 ```
+
+### 怎么认出固件是哪一版
+
+**文件名后缀 = 编译时刻的北京时间**，形如 `-20261004.0031`。
+同一个构建里，这两个地方的值保证一致：
+
+| 位置 | 内容 | 举例 |
+|---|---|---|
+| LuCI → 系统 → 系统 | `OpenWrt SNAPSHOT <版本标识>` | `OpenWrt SNAPSHOT r1-9b95be917b-20261004.0031` |
+| `.bin` 文件名后缀 | 同上的最后一段 | `-20261004.0031` |
+| `config.buildinfo` 的 `build_stamp` / `built_at` | 同上，另给可读格式 | `2026-10-04 00:31 CST` |
+
+```sh
+# 想在设备上确认当前跑的是哪一版
+cat /etc/openwrt_version      # r1-9b95be917b-20261004.0031
+```
+
+> 时间戳是在**构建机上算一次然后烧进固件**的，不是开机时按设备时钟算的。
+> 所以改路由器时区不会让版本号变来变去。
 
 ---
 
