@@ -390,6 +390,65 @@ EOF
   else
     bad_ "换源缺少回读校验 —— sed 没匹配上也会报成功（坑 12 的第二个静默点）"
   fi
+  # 包数兜底：apk update 返回 0 不代表索引有内容
+  if grep -q 'apk list 2>/dev/null | wc -l' "$TSC" 2>/dev/null; then
+    ok_ "换源有包数兜底（残索引不会伪装成成功）"
+  else
+    bad_ "换源缺包数兜底 —— apk update 返回 0 不代表索引有内容"
+  fi
+
+  # ---- 双 WAN 负载均衡守卫（第 13 个坑）----
+  # 防火墙的软/硬件卸载会在 **ingress 钩子**把连接钉死在链路上，
+  # **完全绕过 mwan3 的 mangle 打标链** → balanced 策略形同虚设，
+  # 表现为第二条 WAN 的 rx/tx 长期只有几百字节。负载均衡与卸载**互斥**。
+  # 实测见 SNAPSHOT固件配置教程/fix-mwan3-balance.sh。
+  # 必须**显式**设 0：靠 fw4 默认不保险（默认会随版本变，且用户一勾
+  # LuCI 的「软件流量分载」就翻车），所以这里只认显式赋值。
+  if grep -qE "set firewall\.@defaults\[0\]\.flow_offloading='0'" "$TSC" 2>/dev/null \
+     && grep -qE "set firewall\.@defaults\[0\]\.flow_offloading_hw='0'" "$TSC" 2>/dev/null; then
+    ok_ "首启脚本显式关闭了 flow_offloading / flow_offloading_hw（mwan3 负载均衡的前提）"
+  else
+    bad_ "首启脚本没显式关闭 flow_offloading / flow_offloading_hw —— 负载均衡会静默失效（坑 13）"
+  fi
+  if grep -qE "set firewall\.@defaults\[0\]\.flow_offloading(_hw)?='1'" "$TSC" 2>/dev/null; then
+    bad_ "首启脚本把流量卸载又打开了 —— 和负载均衡直接冲突"
+  fi
+
+  # ---- mwan3 配置生成器守卫 ----
+  IM3="$R/usr/lib/tenda/install-mwan3.sh"
+  if [ -f "$IM3" ]; then
+    ok_ "固件内含 install-mwan3.sh"
+    if grep -qE '^[[:space:]]*write_config\(\)' "$IM3" 2>/dev/null; then
+      ok_ "安装脚本带 write_config()（装完自动写 /etc/config/mwan3）"
+    else
+      bad_ "install-mwan3.sh 没有 write_config() —— 权重/策略/规则全靠人手动配"
+    fi
+    if grep -qE 'WAN_A_WEIGHT:-3' "$IM3" 2>/dev/null \
+       && grep -qE 'WAN_B_WEIGHT:-1' "$IM3" 2>/dev/null; then
+      ok_ "默认权重 3:1（电信 1000M : 移动 300M）"
+    else
+      bad_ "默认权重不是 3:1 —— 检查 WAN_A_WEIGHT / WAN_B_WEIGHT"
+    fi
+    if grep -qE "config policy 'balanced'" "$IM3" 2>/dev/null; then
+      ok_ "生成的配置里有 balanced（均衡）策略"
+    else
+      bad_ "生成的配置里没有 balanced 策略 —— 那就不是负载均衡，是故障转移"
+    fi
+    # 段名 ≤15 字符是硬约束：mwan3 会静默跳过超长段名
+    if grep -qE 'check_balance\(\)' "$IM3" 2>/dev/null && grep -qE '15 字符' "$IM3" 2>/dev/null; then
+      ok_ "带 check_balance() 体检，且说明了 15 字符段名上限"
+    else
+      bad_ "install-mwan3.sh 缺 check_balance() 体检或未说明 15 字符段名上限"
+    fi
+    # 出口设备名不能靠字符串拼：PPPoE 会被 netifd 改名成 pppoe-wanX
+    if grep -qE 'dev_of\(\)' "$IM3" 2>/dev/null; then
+      ok_ "从 ubus 解析出口设备名（不靠字符串拼 pppoe-*）"
+    else
+      bad_ "没有 dev_of() —— PPPoE 出口设备名会写错，体检永远读不到 wan2 流量"
+    fi
+  else
+    bad_ "固件里没有 install-mwan3.sh —— 刷机后没法装 mwan3"
+  fi
 
   # ---- 危险命令守卫 ----
   # AN8855AE 交换芯片下 /etc/init.d/network restart 会导致 LAN 失联、需断电，

@@ -267,9 +267,9 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 
 ---
 
-## 5. ⚠️ 完整坑位清单（12 个，全部静默失败）
+## 5. ⚠️ 完整坑位清单（13 个，全部静默失败）
 
-**这十二个坑的共同点：链路上没有任何一个环节会报错。**
+**这十三个坑的共同点：链路上没有任何一个环节会报错。**
 形态都是「编译成功 → CI 绿 → 守卫过 → 固件里东西是错的」。
 
 完整成因与解法见 `README.md` §13.2，这里只列速查：
@@ -547,6 +547,81 @@ CERNET 镜像帮助页（`help.mirrors.cernet.edu.cn/openwrt/`）写得很清楚
   和本机固件的 LuCI **同一个 commit**，说明 snapshot 尚未从我们的构建点漂走
 
 
+### 坑 13：流量卸载让 mwan3 负载均衡静默失效
+
+**已造成真实故障**：两条 WAN 都 online、mwan3 规则全加载、
+`mwan3 status` 里 `balanced` 策略也正常显示，但**第二条 WAN 的
+rx/tx 长期只有几百字节**，等于没均衡。
+
+**根因**：防火墙的软卸载/硬件卸载会在 **ingress 钩子**把连接
+**直接钉死在链路上**，完全绕过 mwan3 的 mangle 打标链。
+于是 `balanced` 策略虽然匹配上了，打的标却到不了 ip rule。
+**负载均衡与流量卸载互斥。**
+
+代价：失去 NAT 卸载，转发走 CPU。本机四核 A53 @2.0GHz 扛得住 1G 家用负载。
+若更看重转发性能，把策略改成「故障转移」再把卸载改回 1。
+
+修法：`99-tenda-custom` 里**显式**设
+
+```sh
+set firewall.@defaults[0].flow_offloading='0'
+set firewall.@defaults[0].flow_offloading_hw='0'
+set firewall.@defaults[0].fullcone='1'
+```
+
+> ⚠️ 必须**显式**设 0，不能靠 fw4 默认 —— 默认会随版本变，
+> 而且用户在 LuCI 里勾一下「软件流量分载」就翻车。
+> Run #18 实机确认：设备当时 `flow_offloading=1 / hw=1`（虽然运行时没有
+> flowtable），已按新脚本改为 0 并 commit。
+
+#### 顺带解决的第二个问题：配置得靠人记
+
+`install-mwan3.sh` 原来只负责装包，装完让用户「自己去 LuCI 点一遍」，
+权重 3:1 / 策略 / 规则全靠记忆。现已补上 `write_config()`，
+装完自动生成 `/etc/config/mwan3`（实机验证：12 个段、段类型全对、
+`mwan3 status` 四条策略和四条规则全部 Active）。
+
+生成时踩到的三个约束（都写进守卫了）：
+
+1. **段名 ≤ 15 字符** —— 超长 mwan3 静默跳过，没有任何报错。
+   所以段名用 `wan_m1_w3` / `balanced` / `r_gaming` 这种短名。
+2. **规则必须带 `option src_zone 'lan'`** —— 路由器自身发起的流量
+   走 main 表，不该被策略路由抢走。
+3. **HTTPS(443) 要 `sticky`** —— 否则一条大流量会被拆到两条 WAN，
+   服务器侧看到的源 IP 时断时续。
+
+#### check_balance 的一个误报（值得记）
+
+第一版 `check_balance()` 只要发现第二条 WAN 没流量就报故障，
+结果**误报**：规则是 `src_zone 'lan'`，只有 LAN 客户端的流量才进
+打标链，而采样窗口（20 秒）里根本没有 LAN 流量 —— 那点流量是
+SSH 和 apk update 本身产生的，走 main 表。
+
+正确判据是**先看 mwan3 链的包计数器**：
+
+```sh
+nft list chain inet mwan3 mwan3_policy_balanced | sed -n 's/.*packets \([0-9]\+\).*/\1/p'
+```
+
+- 计数为 0 → 「采样窗口没有 LAN 流量」，**不是故障**
+- 计数 > 0 但第二条 WAN 仍无流量 → 打标或策略没生效，**真故障**
+
+> 这就是坑 9/10/11/12 那个老教训的又一次翻版：
+> **「某个观察值是 0」不等于「功能坏了」，得先确认观察条件本身成立。**
+
+#### 实测验证（2026-10-03，设备 192.168.100.254）
+
+- 路由器下不动 GitHub Releases（`api.github.com` 通、`github.com` 下载 404/超时），
+  改由 PC 下载后 `scp -O` 上去 `apk add --allow-untrusted`
+- mwan3 `3.6.12-r1`（nft 移植版，带 `mwan3ct` / `mwan3-diag`）
+- `mwan3 status`：wan / wan2 均 online 且 tracking active
+- nft 表 `inet mwan3` 已建；`mwan3_policy_balanced` 链在打 fwmark
+- `ip rule`：1001/1002 按 iif、2001/2002 按 fwmark、2061 blackhole、
+  2062 unreachable、3002 按源地址 —— 策略路由齐全
+- 路由表 1 = eth2 (192.168.1.1, metric 10)，表 2 = pppoe-wan2 (100.64.0.1, metric 20)
+- 4 条规则全部 Active：游戏/远程 → mobile，443 sticky → balanced，默认 → balanced
+
+
 ### 两条最容易重犯的
 
 **坑 8 的机制**（务必理解）：
@@ -813,7 +888,29 @@ grep -qE 'if grep -qE "\$\{bad\}" "\$repos"; then' $F \
 grep -q 'apk list 2>/dev/null | wc -l' $F \
   || echo "❌ 没有包数兜底 —— 残索引也会让 apk update 返回 0"
 
-# 10. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
+# 10. 双 WAN 负载均衡没被改坏（§5 坑 13）
+F=files/etc/uci-defaults/99-tenda-custom
+M=files/usr/lib/tenda/install-mwan3.sh
+# 流量卸载必须显式为 0 —— 不能靠 fw4 默认，用户在 LuCI 勾一下就翻车
+grep -qE "set firewall\.@defaults\[0\]\.flow_offloading='0'" $F \
+  || echo "❌ 没显式关 flow_offloading —— mwan3 负载均衡会静默失效（坑 13）"
+grep -qE "set firewall\.@defaults\[0\]\.flow_offloading_hw='0'" $F \
+  || echo "❌ 没显式关 flow_offloading_hw（同上）"
+grep -qE "set firewall\.@defaults\[0\]\.flow_offloading(_hw)?='1'" $F \
+  && echo "❌ 又把流量卸载打开了 —— 和负载均衡直接冲突"
+# 配置生成器
+grep -qE '^[[:space:]]*write_config\(\)' $M || echo "❌ 缺 write_config()"
+grep -qE 'WAN_A_WEIGHT:-3' $M && grep -qE 'WAN_B_WEIGHT:-1' $M \
+  || echo "❌ 默认权重不是 3:1"
+grep -qE "config policy 'balanced'" $M || echo "❌ 没有 balanced 策略"
+# 段名 ≤15 字符：超长被 mwan3 静默跳过，check_balance 第 3 项查这个
+grep -qE 'check_balance\(\)' $M || echo "❌ 缺 check_balance() 体检"
+# PPPoE 出口设备名必须从 ubus 拿（netifd 会改名成 pppoe-wanX）
+grep -qE 'dev_of\(\)' $M || echo "❌ 缺 dev_of()，体检读不到 wan2 流量"
+# 规则必须有 src_zone，否则路由器自身流量也被打标
+grep -qE "option src_zone 'lan'" $M || echo "❌ 规则缺 src_zone lan"
+
+# 11. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
 ./scripts/verify-firmware.sh <含 bin/targets/mediatek/filogic/ 的目录>
 ```
 

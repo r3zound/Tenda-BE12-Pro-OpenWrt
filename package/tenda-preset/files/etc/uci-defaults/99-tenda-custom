@@ -144,6 +144,22 @@ apply_base_config() {
 		set firewall.@defaults[0].forward='REJECT'
 		set firewall.@defaults[0].drop_invalid='1'
 		set firewall.@defaults[0].family='ipv4'
+
+		# ---- ⚠️ 关闭流量卸载：这是 mwan3 负载均衡能生效的前提 ----
+		# 实测结论（2026-10-03，设备 192.168.100.254，见 SNAPSHOT固件配置教程/fix-mwan3-balance.sh）：
+		#   防火墙的软卸载/硬件卸载会在 **ingress 钩子**把连接直接钉死在链路上，
+		#   **完全绕过 mwan3 的 mangle 打标链**，于是 balanced 策略下
+		#   几乎只有第一条线跑流量（表现为 wan2 的 rx/tx 长期为几百字节）。
+		#   负载均衡与流量卸载**互斥**，必须关掉。
+		# 代价：失去 NAT 卸载，转发走 CPU。本机四核 A53 @2.0GHz 扛得住 1G 家用负载。
+		# 若更看重转发性能，把 mwan3 策略改成「故障转移」再把这两个改回 1。
+		set firewall.@defaults[0].flow_offloading='0'
+		set firewall.@defaults[0].flow_offloading_hw='0'
+
+		# fullcone：改善 NAT 类型，对游戏/视频通话/P2P 有帮助。
+		# 代价是失去部分隐私性（不再严格隐藏内网地址）。
+		set firewall.@defaults[0].fullcone='1'
+
 		set firewall.$zlan.name='lan'
 		set firewall.$zlan.network='lan'
 		set firewall.$zlan.input='ACCEPT'
