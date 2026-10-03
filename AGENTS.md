@@ -622,6 +622,90 @@ nft list chain inet mwan3 mwan3_policy_balanced | sed -n 's/.*packets \([0-9]\+\
 - 4 条规则全部 Active：游戏/远程 → mobile，443 sticky → balanced，默认 → balanced
 
 
+### 坑 14：本机构建的固件刷完装不了任何内核模块
+
+**已造成真实故障**：用户在 LuCI 里点安装 mwan3，详情页底部出现
+
+```
+依赖的软件包 kmod-ip6tables 在所有仓库都未提供。
+依赖的软件包 kmod-nft-compat 在所有仓库都未提供。
+依赖的软件包 kmod-ipt-conntrack-extra 在所有仓库都未提供。
+依赖的软件包 kmod-ipt-ipopt 在所有仓库都未提供。
+```
+
+#### 根因（OpenWrt 源码，不是猜的）
+
+`include/feeds.mk` 的 `FeedSourcesAppendAPK` 里，kmods 那一行被包在
+**`$(if $(CONFIG_BUILDBOT), …)`** 里面 —— 也就是说
+
+> **只有官方构建机产出的固件才会往 `distfeeds.list` 写 kmods 源。**
+
+理由是「自己编的固件，该有的模块本来就已经在镜像里了」。代价就是
+本机构建的固件永远缺这一行。
+
+#### 实测证据（设备 192.168.100.254，Run #18 固件，内核 6.18.54）
+
+| 检查 | 结果 |
+|---|---|
+| `distfeeds.list` 行数 | 4 行，**kmods 行 0 条** |
+| `apk search kmod-*` | 3 个条目，全是 `kmod` / `libkmod` / `open-plc-utils-int6kmod` 这类工具包，**没有一个是内核模块** |
+| 固件内已装 kmod 包数 | 64 个（编译期打进去的） |
+| `apk policy kmod-nf-ipt` | 只有 `lib/apk/db/installed`，**没有任何仓库提供它** |
+
+不是「少数几个模块缺」，是**一个内核模块都装不了**。
+
+#### 官方 kmods 源确实可用（实测）
+
+官方把 kmods 放在 `targets/<target>/kmods/<版本>-<release>-<配置哈希>/`。
+实测当前内核 6.18.54 对应的目录存在，索引 1225 个包，USTC 与官方站
+字节数完全一致（168536 字节）。
+
+vermagic 逐字节相同，所以模块**能加载**：
+
+```
+本机:   vermagic:  6.18.54 SMP mod_unload aarch64
+官方包: vermagic=6.18.54 SMP mod_unload aarch64
+```
+
+加上这个源之后：可用包 **9187 → 10412**，mwan3 缺的 4 个依赖全部解析成功，
+`kmod-nft-tproxy` / `kmod-nft-socket` 也都在里面。
+
+#### 固件侧的处理：`add_kmods_feed()`
+
+首启脚本里新增，位置在 `switch_mirror` **之后**（要从已切好的 distfeeds 反推目录）：
+
+- 从 `distfeeds.list` 里那条 `/targets/` 源地址**掐掉后缀反推 kmods 父目录**，
+  而不是写死 `targets/mediatek/filogic` —— 换 target 或 arch 不会失效
+- 列镜像站 `kmods/` 目录，取版本号等于 `uname -r` 的最新一条
+- **追加**写入 `/etc/apk/repositories.d/customfeeds.list`（不覆盖，
+  用户自己加的源要留着）
+- 回读校验 → `apk update` → **拿 `kmod-nft-tproxy` 能不能搜到当判据**
+  （不是拿「apk update 没报错」当判据）
+- 探测不到就只告警不阻断，绝不拦住整个首启
+
+#### ⚠️ 必须带 `curl -L`
+
+**USTC 对 snapshots 是 301 重定向到 `downloads.openwrt.org`，不是真镜像。**
+
+- 不带 `-L`：拿到 209 字节的 nginx 跳转页，一个 `href` 都没有
+  → 探测永远「找不到条目」，而日志看起来像正常告警
+- 带 `-L`：正常列出 23 个版本目录
+
+顺带纠正一个一直存在的误解：
+**「USTC 是唯一可用的国内源」成立的原因不是它更快，而是它不返回 404。**
+它对 snapshots 没有任何加速作用，文件是原样从 `downloads.openwrt.org` 来的。
+
+#### 残留风险
+
+那个目录名里的**配置哈希对应的是 buildbot 的内核配置，和我们的 `base.config` 不同**。
+版本号相同、vermagic 相同，所以模块能加载；但如果某个模块依赖了我们
+没开的内核选项，会在加载时以 `Unknown symbol` **干净地失败**（不会静默崩溃，
+因为本机 vermagic 里没有 `modversions`，没有 CRC 校验，但符号解析仍然要做）。
+
+这种偶发失败才是自建源（`scripts/build-repo.sh`）不可替代的地方：
+源和固件在同一个 build root 产出，配置哈希天然一致。
+
+
 ### 两条最容易重犯的
 
 **坑 8 的机制**（务必理解）：
@@ -910,7 +994,28 @@ grep -qE 'dev_of\(\)' $M || echo "❌ 缺 dev_of()，体检读不到 wan2 流量
 # 规则必须有 src_zone，否则路由器自身流量也被打标
 grep -qE "option src_zone 'lan'" $M || echo "❌ 规则缺 src_zone lan"
 
-# 11. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
+# 11. 内核模块源没被改坏（§5 坑 14）—— 本机构建的固件装不了任何内核模块
+F=files/etc/uci-defaults/99-tenda-custom
+grep -q '^add_kmods_feed()' $F \
+  || echo "❌ 缺 add_kmods_feed —— 刷完机装不了任何内核模块（坑 14）"
+# ⚠️ 必须 -L：USTC 对 snapshots 是 301 重定向到 downloads.openwrt.org，
+#    不跟重定向拿到的是 209 字节 nginx 跳转页，一个 href 都没有，
+#    探测永远失败而日志看着像正常告警。
+grep -qE 'curl -sL --max-time [0-9]+ "\$dir"' $F \
+  || echo "❌ 列 kmods 目录没跟重定向 —— USTC 是 301（坑 14）"
+# 必须从 distfeeds.list 反推目录，写死 targets/mediatek/filogic 换个 target 就废
+grep -qE 'base="\$\(grep -v .\^#. "\$dist" \| grep ./targets/. \| head -1\)"' $F \
+  || echo "❌ kmods 目录没从 distfeeds.list 反推（坑 14）"
+# 必须追加而不是覆盖，用户自己加的源要留着
+grep -q '>> "\$cf"' $F \
+  || echo "❌ customfeeds.list 是覆盖写的，会抹掉用户自己加的源"
+# 判据必须是「包能不能搜到」，不是「apk update 有没有报错」
+grep -q "apk search -q '\^kmod-nft-tproxy\\\$'" $F \
+  || echo "❌ 没拿 kmod-nft-tproxy 能不能搜到当判据（坑 9/10/11 的同款教训）"
+# 定义了就得调用，否则等于没写
+grep -q '^add_kmods_feed$' $F || echo "❌ 定义了却没在首启流程里调用"
+
+# 12. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
 ./scripts/verify-firmware.sh <含 bin/targets/mediatek/filogic/ 的目录>
 ```
 
@@ -931,4 +1036,9 @@ grep -qE "option src_zone 'lan'" $M || echo "❌ 规则缺 src_zone lan"
 - 换软件源时**只考虑 releases**（照抄网上的「OpenWrt 换源教程」）
   → 参见坑 12；本机是 SNAPSHOT，清华/阿里云/南大/上交全是 404，
   **只有中科大 USTC 提供 snapshots 反代**
+- 以为「从国内源装东西」就等于「装得到」
+  → 参见坑 14；本机构建的固件**一个内核模块都装不了**，
+  因为 kmods 那一行被 `CONFIG_BUILDBOT` 门控。
+  另外 **USTC 对 snapshots 只是 301 重定向到官方站，没有任何加速作用**，
+  选它的唯一理由是它不返回 404 —— 凡是要 `curl` 镜像站的地方都得带 `-L`
 

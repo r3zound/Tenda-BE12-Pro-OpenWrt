@@ -397,6 +397,40 @@ EOF
     bad_ "换源缺包数兜底 —— apk update 返回 0 不代表索引有内容"
   fi
 
+  # ---- 内核模块源守卫（第 14 个坑）----
+  # 本机构建的固件刷完后**一个内核模块都装不了**：OpenWrt 只在
+  # CONFIG_BUILDBOT 时才往 distfeeds.list 写 kmods 那一行
+  # （include/feeds.mk 的 FeedSourcesAppendAPK），本机构建的固件没有这行。
+  # 现象是 LuCI 里 mwan3 详情页底部「依赖的软件包 kmod-ip6tables
+  # 在所有仓库都未提供」，同样的还有 kmod-nft-compat /
+  # kmod-ipt-conntrack-extra / kmod-ipt-ipopt。
+  # 后果：任何依赖新内核模块的面板（透明代理的 kmod-nft-tproxy 尤其）都装不了。
+  if grep -q '^add_kmods_feed()' "$TSC" 2>/dev/null; then
+    ok_ "首启脚本有 add_kmods_feed（自动补内核模块源）"
+  else
+    bad_ "首启脚本没有 add_kmods_feed —— 刷完机装不了任何内核模块（坑 14）"
+  fi
+  # ⚠️ 必须 -L：USTC 对 snapshots 是 301 重定向到 downloads.openwrt.org，
+  #    不跟重定向拿到的是 209 字节的 nginx 跳转页，一个 href 都没有。
+  #    少了 -L，探测永远「找不到条目」，而日志看起来像正常告警。
+  if grep -qE 'curl -sL --max-time [0-9]+ "\$dir"' "$TSC" 2>/dev/null; then
+    ok_ "列 kmods 目录时跟了重定向（curl -sL，USTC 对 snapshots 是 301）"
+  else
+    bad_ "列 kmods 目录没跟重定向 —— USTC 是 301 到官方站，探测必然失败（坑 14）"
+  fi
+  # 必须从 distfeeds.list 反推目录，写死 targets/mediatek/filogic 换个 target 就废
+  if grep -qE 'base="\$\(grep -v .\^#. "\$dist" \| grep ./targets/. \| head -1\)"' "$TSC" 2>/dev/null; then
+    ok_ "kmods 目录从 distfeeds.list 反推（换 target / arch 不会失效）"
+  else
+    bad_ "kmods 目录没有从 distfeeds.list 反推 —— 换 target 或 arch 就会指错地方"
+  fi
+  # 探测失败只告警不阻断：内核模块装不上不该拦住整个首启
+  if grep -q 'add_kmods_feed$' "$TSC" 2>/dev/null; then
+    ok_ "add_kmods_feed 已在首启流程里调用"
+  else
+    bad_ "定义了 add_kmods_feed 却没调用 —— 等于没写"
+  fi
+
   # ---- 双 WAN 负载均衡守卫（第 13 个坑）----
   # 防火墙的软/硬件卸载会在 **ingress 钩子**把连接钉死在链路上，
   # **完全绕过 mwan3 的 mangle 打标链** → balanced 策略形同虚设，

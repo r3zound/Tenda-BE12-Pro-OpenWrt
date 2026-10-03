@@ -141,8 +141,118 @@ install_repo_key() {
 }
 
 # -----------------------------------------------------------------------------
-# 2. DHCP / 防火墙 / SSH / 系统配置
+# 1.6 自动补上内核模块源（kmods feed）
 # -----------------------------------------------------------------------------
+# 【本项目坑 14】本机构建的固件，刷完之后**一个内核模块都装不了**。
+#
+# 现象：在 LuCI 里点安装 mwan3，详情页底部出现
+#     依赖的软件包 kmod-ip6tables 在所有仓库都未提供。
+#     依赖的软件包 kmod-nft-compat 在所有仓库都未提供。
+#     依赖的软件包 kmod-ipt-conntrack-extra 在所有仓库都未提供。
+#     依赖的软件包 kmod-ipt-ipopt 在所有仓库都未提供。
+#
+# 根因（OpenWrt 源码 include/feeds.mk 的 FeedSourcesAppendAPK）：
+#     distfeeds.list 里的 kmods 那一行被 $(if $(CONFIG_BUILDBOT), …) 包着 ——
+#     **只有官方构建机的固件才会写 kmods 源**。理由是「自己编的固件，
+#     该有的模块本来就已经在镜像里了」。结果就是本机构建的固件永远缺这一行。
+#
+# 实测（设备 Run #18 固件，内核 6.18.54）：
+#     distfeeds.list 只有 4 行，kmods 行 0 条
+#     `apk search kmod-*` 只返回 3 个条目，而且全是 libkmod / open-plc-utils-int6kmod
+#       这类名字里带 kmod 的工具包，**没有一个是真正的内核模块**
+#     而固件里已经装了 64 个 kmod 包（编译期打进去的）
+#     `apk policy kmod-nf-ipt` 只看得到 lib/apk/db/installed，没有任何仓库提供它
+#
+# 为什么非补不可：官方把 kmods 放在 targets/<target>/kmods/<版本>-<release>-<配置哈希>/
+#   这个目录**每次快照滚动都会被替换**，过几天当前内核版本就整个消失。
+#   更麻烦的是那个配置哈希对应的是 buildbot 的内核配置，和我们自己的 base.config
+#   并不相同 —— 版本号一样、vermagic 逐字节相同，所以模块**能加载**，
+#   但如果恰好某个模块依赖了我们没开的内核选项，会在加载时以
+#   "Unknown symbol" 干净地失败。
+#
+# 为什么在这里现算而不写死：目录名里带内核版本号，固件一升级就变。
+#   探测镜像站目录列表，取版本号匹配的最新一条，写进去就完事，
+#   对上游内核版本漂移免疫。
+#
+# ⚠️ 为什么必须从 distfeeds.list 反推目录，而不是写死 targets/mediatek/filogic：
+#    换了 target 或 arch 就不灵了。distfeeds.list 第一行就是
+#    .../targets/<target>/packages/packages.adb，掐掉后缀正好得到 kmods 的父目录。
+# -----------------------------------------------------------------------------
+add_kmods_feed() {
+	local cf="/etc/apk/repositories.d/customfeeds.list"
+	local dist="/etc/apk/repositories.d/distfeeds.list"
+	local kver base dir entry url code cnt
+
+	[ -f "$dist" ] || { warn "未找到 distfeeds.list，内核模块源跳过"; return 0; }
+
+	command -v curl >/dev/null 2>&1 || { warn "系统没有 curl，内核模块源跳过"; return 0; }
+
+	base="$(grep -v '^#' "$dist" | grep '/targets/' | head -1)"
+	[ -n "$base" ] || { warn "distfeeds.list 里没有 targets/ 源行，内核模块源跳过"; return 0; }
+	base="${base%/packages/packages.adb}"
+
+	kver="$(uname -r)"
+	[ -n "$kver" ] || { warn "读不到内核版本，内核模块源跳过"; return 0; }
+
+	# 已经指向当前内核版本 → 不动（幂等，也避免每次首启都改 mtime）
+	if [ -f "$cf" ] && grep -q "/kmods/${kver}-" "$cf" 2>/dev/null; then
+		log "内核模块源已是 ${kver}，跳过"
+		return 0
+	fi
+
+	dir="${base}/kmods/"
+	# ⚠️⚠️ **必须带 -L**。
+	#    实测 USTC 对 snapshots 是 301 重定向到 downloads.openwrt.org，
+	#    不是真镜像：不带 -L 时拿到的是 209 字节的 nginx 跳转页，
+	#    一个 href 都没有，下面那条 grep 必然匹配不到，
+	#    表现就是「明明有这个版本，却说没找到条目」。
+	#    顺带纠正一个认知：USTC 对 snapshots 并无加速作用，文件是原样从
+	#    downloads.openwrt.org 来的（两边字节数完全相同），
+	#    「USTC 是唯一可用源」成立的原因只是它不返回 404，而不是它更快。
+	entry="$(curl -sL --max-time 25 "$dir" 2>/dev/null \
+		| grep -oE "href=\"${kver}-[^\"]*/\"" \
+		| sed 's/href="//; s/"$//' \
+		| sort -V | tail -1)"
+
+	if [ -z "$entry" ]; then
+		warn "镜像站 kmods/ 里没有 ${kver} 的条目，本次装不了新内核模块"
+		warn "  已查: $dir"
+		return 0
+	fi
+
+	url="${dir}${entry}packages.adb"
+
+	# 探测到的不等于能用：先确认索引真的能下载
+	code="$(curl -sL -o /dev/null -w '%{http_code}' --max-time 20 "$url" 2>/dev/null)"
+	if [ "$code" != "200" ]; then
+		warn "kmods 索引不可达 (HTTP ${code})，跳过"
+		return 0
+	fi
+
+	mkdir -p "$(dirname "$cf")"
+	# ⚠️ 追加而不是覆盖：用户可能自己往 customfeeds.list 里加了自建源等其它源
+	printf '%s\n' "$url" >> "$cf"
+
+	# 回读校验：写进去不等于生效（坑 9/10/11/12/13/14 同一个教训）
+	if ! grep -qF "$url" "$cf" 2>/dev/null; then
+		warn "内核模块源写入后回读不到"
+		return 0
+	fi
+	log "已添加内核模块源 ${entry}"
+
+	if apk update >/dev/null 2>&1; then
+		# 真正的判据不是「apk update 没报错」，而是**那些之前找不到的包现在找得到**
+		if apk search -q '^kmod-nft-tproxy$' >/dev/null 2>&1; then
+			cnt="$(apk list 2>/dev/null | wc -l)"
+			log "内核模块可用（kmod-nft-tproxy 已可安装，共 ${cnt} 个包）"
+		else
+			warn "apk update 成功但仍找不到内核模块，源可能不完整"
+		fi
+	else
+		warn "apk update 失败，内核模块暂时装不了"
+	fi
+}
+
 # ⚠️ 为什么这四项不在固件里以 /etc/config/* 文件形式下发，
 #    而要在这里用 uci batch 写：
 #    apk 严格维护文件归属。/etc/config/dhcp 属于 dnsmasq、
@@ -619,6 +729,10 @@ log "首次启动配置开始…"
 
 switch_mirror
 install_repo_key
+# ⚠️ 顺序有讲究：必须排在 switch_mirror 之后 —— 它是从 distfeeds.list 里
+#    的 target 源地址反推 kmods 目录的，distfeeds 还没指向国内镜像时，
+#    列目录会直接超时。
+add_kmods_feed
 apply_base_config
 ensure_lan
 check_interfaces
