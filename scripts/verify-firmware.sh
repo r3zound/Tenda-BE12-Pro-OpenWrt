@@ -249,6 +249,61 @@ EOF
     ok_ "首启脚本没有误关 radio"
   fi
 
+  # ---- 无线配置必须预置在固件里（第 10 个静默坑）----
+  # /etc/config/wireless **默认不在 rootfs 里**，它由 /sbin/wifi config
+  # （ucode /lib/wifi/mac80211.uc，源数据 /etc/board.json）在运行时生成。
+  # 只靠首启脚本 uci set 会有两个致命问题：
+  #   ① 生成时机在 uci-defaults 之后，会把首启脚本的修改整个洗掉
+  #   ② wireless 配置还不存在时，`uci set wireless.default_radio0.disabled='1'`
+  #      会造出一个**类型叫 default_radio0 的伪段**（不是 wifi-iface），
+  #      commit 成功、netifd 不认 —— 旧版 disable_wifi() 就是这么静默失效的，
+  #      设备实际以**无密码开放网络 OpenWrt** 上线。
+  # 所以必须把带正确段类型的完整 wireless 配置预置进固件，
+  # 让 mac80211.uc 的 radio_exists() 跳过生成。
+  WLC="$R/etc/config/wireless"
+  if [ ! -f "$WLC" ]; then
+    bad_ "固件里没有 /etc/config/wireless —— 首启脚本的 uci set 会造出错误类型的伪段并被生成器洗掉"
+  else
+    ok_ "/etc/config/wireless 已预置"
+    # 段类型：只能是 wifi-device / wifi-iface，出现别的就是伪段
+    if grep -E "^[[:space:]]*config " "$WLC" | grep -qvE "^config (wifi-device|wifi-iface) "; then
+      bad_ "/etc/config/wireless 里有非 wifi-device/wifi-iface 的段（伪段，netifd 不认）"
+    else
+      ok_ "/etc/config/wireless 的段类型正确（全部是 wifi-device / wifi-iface）"
+    fi
+    # 两个 radio 都要在，且要有 path（mac80211.uc 的 radio_exists() 按 path 匹配，
+    # 缺 path 就匹配不上，生成器照样会重新生成并覆盖）
+    for r in 0 1; do
+      if grep -qE "^[[:space:]]*config wifi-device '?radio$r'?" "$WLC" \
+         && grep -qE "^[[:space:]]*option path " "$WLC"; then
+        :
+      else
+        bad_ "/etc/config/wireless 缺 radio$r 或缺 option path —— 生成器会覆盖整个文件"
+      fi
+    done
+    grep -qE "^[[:space:]]*option path " "$WLC" \
+      && ok_ "/etc/config/wireless 声明了 option path（radio_exists() 可匹配）"
+    # SSID / 加密 / 国家码
+    grep -qE "^[[:space:]]*option ssid 'ASUS'" "$WLC" \
+      && ok_ "预置 SSID = ASUS" \
+      || bad_ "/etc/config/wireless 里没有 SSID 'ASUS'"
+    grep -qE "^[[:space:]]*option encryption 'psk2'" "$WLC" \
+      && ok_ "预置加密 = psk2（WPA2-PSK）" \
+      || bad_ "/etc/config/wireless 里没有 encryption 'psk2'（sae 会变成 WPA3）"
+    grep -qE "^[[:space:]]*option country 'CN'" "$WLC" \
+      && ok_ "预置国家码 = CN" \
+      || bad_ "/etc/config/wireless 里没有 country 'CN'"
+    grep -qE "^[[:space:]]*option key 'abcd1234\.'" "$WLC" \
+      && ok_ "预置密码存在（公开默认值，用户知情决定）" \
+      || bad_ "/etc/config/wireless 里没有预置密码"
+    # 绝不能出现开放网络
+    if grep -qE "^[[:space:]]*option encryption 'none'" "$WLC"; then
+      bad_ "/etc/config/wireless 里有 encryption 'none' —— 会开出一个无密码的开放网络"
+    else
+      ok_ "没有 encryption 'none'（不会开开放网络）"
+    fi
+  fi
+
   # ---- 危险命令守卫 ----
   # AN8855AE 交换芯片下 /etc/init.d/network restart 会导致 LAN 失联、需断电，
   # 预置文件里绝不能把它当成操作指引告诉用户。
