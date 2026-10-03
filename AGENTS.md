@@ -733,37 +733,92 @@ LuCI「系统 → 系统」显示的就是它。`%C` 来自 **`CONFIG_VERSION_CO
 `CONFIG_VERSION_CODE` 是 OpenWrt 官方留给二次编译方的字段，**同一次构建内**
 还会写进 `/etc/openwrt_version`。
 
-#### 三个必须知道的约束
+#### 版本串怎么挂上去的 —— 别再写 .config，走 REVISION 环境变量
 
-1. **`CONFIG_VERSIONOPT` 默认是 `n`，不打开的话赋值会被 defconfig 丢掉**
-   —— `package/base-files/image-config.in:161-163`：
-   ```kconfig
-   menuconfig VERSIONOPT
-       bool "Version configuration options" if IMAGEOPT
-       default n
-   ```
-   所有 `CONFIG_VERSION_*` 都在这个**不可见的菜单块**里。
-   直接往 `.config` 写 `CONFIG_VERSION_CODE="..."` 再 `make defconfig`，
-   kconfig 会当成无效赋值**静默删除** —— 日志里照样打印
-   `# configuration written to .config`，一切看起来正常，
-   只有回读校验才发现值没了。**Run #20 就这么失败的。**
+`/etc/openwrt_release` 的模板是：
 
-   必须同时写 `CONFIG_VERSIONOPT=y`。
+```
+DISTRIB_DESCRIPTION='%D %V %C'
+```
 
-2. **打开 `VERSIONOPT` 之后，`CONFIG_VERSION_CODE_FILENAMES` 的默认 `y` 会真正生效**
-   —— `include/image.mk:49` 的 `IMG_PREFIX_VERCODE` 会把版本码作为**前缀**
-   插进文件名，和我们自己的**后缀**撞车，变成
-   `r1-...-20261004.0031-openwrt-...-sysupgrade-20261004.0031.bin` 两头都有日期。
-   所以第 1 条和这条必须**一起**做：开 `VERSIONOPT` + 钉死 `FILENAMES=n`
+LuCI「系统 → 系统」显示的就是它。`%C` 来自 `CONFIG_VERSION_CODE`
+（`include/version.mk:33` `VERSION_CODE:=$(if $(VERSION_CODE),$(VERSION_CODE),$(REVISION))`）。
 
-3. **`CONFIG_VERSION_NUMBER` 不能动**（它进 `DISTRIB_RELEASE`，影响 apk 包版本比较），
-   **版本串只能用 `[0-9a-z.-]`**（同时写进 `/etc/openwrt_version`，
-   下游有 shell 在读，带空格会被拆成两个参数）
+**看起来**该往 `.config` 里写 `CONFIG_VERSION_CODE="r1-xxx-20261004.0031"`。
+**这是错的，Run #20 和 #21 连栽两次。**
+
+`package/base-files/image-config.in:161-163`：
+
+```kconfig
+menuconfig VERSIONOPT
+	bool "Version configuration options" if IMAGEOPT
+	default n
+```
+
+所有 `CONFIG_VERSION_*` 都在这个菜单块里，而它自己又 `if IMAGEOPT`。
+`IMAGEOPT` 没开 → `VERSIONOPT` **不可见** → **不可见的 bool 被 kconfig
+强制回默认值**。实测：
+
+| 写进去的 | `make defconfig` 之后 |
+|---|---|
+| `CONFIG_VERSION_CODE="..."` | 整行消失 |
+| `CONFIG_VERSIONOPT=y` | 变成 `# CONFIG_VERSIONOPT is not set` |
+
+而日志里照样打印 `# configuration written to .config`，**一切看着正常**。
+Run #21 打印出来的实际 `.config` 里就只有那一行 `is not set`。
+
+#### 正确入口：`REVISION` 环境变量
+
+`include/toplevel.mk:13-20` 明确支持：
+
+```make
+else ifeq ($(filter-out 0,$(MAKELEVEL))$(origin REVISION)$(origin SOURCE_DATE_EPOCH),$(MAKELEVEL)environmentenvironment)
+  # Recursive calls of the top-level Makefile get both from its environment.
+else
+  REVISION:=$(shell $(TOPDIR)/scripts/getver.sh)
+export REVISION
+```
+
+所以只要 `export REVISION="r1-xxx-20261004.0031"`，
+`VERSION_CODE` 就会回退到它，`DISTRIB_DESCRIPTION` / `DISTRIB_REVISION` /
+`/etc/openwrt_version` 全部正确。**完全不碰 kconfig**，也就没有
+「defconfig 会不会把它吃掉」的问题。
+
+三个落地要点：
+
+- CI 里经 `$GITHUB_ENV` 导出 `REVISION=$TENDA_BUILD_VERSION`
+- **`build.sh` 必须在它自己这一层 export** —— `gen-config.sh` 是子进程，
+  它 export 出来的变量回不到父进程，而后面的 `make` 是父进程调的
+- `gen-config.sh` 的回读校验**不能**再查 `.config` 里的 `CONFIG_VERSION_CODE`
+  （走 REVISION 路线根本没那一行，查了必然误报）。
+  **真正的判据在 `verify-firmware.sh`**：解开 squashfs 直接看
+  `/etc/openwrt_release` 和 `/etc/openwrt_version` 的真实内容 ——
+  那才是用户会看到的字符串。
+
+#### ⚠️ `gen-feeds.sh` 的 shallow fetch 会毁掉 revision
+
+`getver.sh` 靠 `git rev-list ee53a240..HEAD | wc -l` 算出 `r<N>` 里的那个 N，
+**必须有完整历史**。
+
+而原代码是 `git clone --filter=blob:none`（本来有完整历史，只是 blob 被过滤）
+之后又 `git fetch --depth 1 origin <commit>` —— 在这种仓库上做浅 fetch
+会把仓库变成**浅克隆**（写 `.git/shallow`），历史被截断，
+`getver.sh` 于是返回空，版本串退化成 `git-<短hash>`（Run #21 实测）。
+
+现在先 `git cat-file -e` 看 commit 在不在本地（clone 全历史，通常在），
+在就直接 checkout，shallow 只作为兜底。
+
+#### 另外两个必须知道的约束
+
+1. **`CONFIG_VERSION_NUMBER` 不能动** —— 它进 `DISTRIB_RELEASE`，
+   会影响 apk 的包版本比较
+2. **版本串只能用 `[0-9a-z.-]`** —— 它同时写进 `/etc/openwrt_version`，
+   下游有 shell 在读，带空格会被拆成两个参数
 
 #### ⚠️ 版本串的生成步骤必须排在 `gen-feeds.sh` 之后
 
-`REVISION` 来自 OpenWrt 源码树里的 `scripts/getver.sh`，而那棵树是
-`gen-feeds.sh`（`git clone --filter=blob:none`）才拉出来的。
+`REVISION` 里的 hash 来自 OpenWrt 源码树里的 `scripts/getver.sh`，
+而那棵树是 `gen-feeds.sh`（`git clone --filter=blob:none`）才拉出来的。
 
 Run #20 把「生成构建时间戳」排在了 `gen-feeds.sh` **前面**，
 那时候 `$OPENWRT_SRC` 还不存在 → `getver.sh` 跑不了 →
@@ -1128,21 +1183,28 @@ grep -q 'build-stamp.sh.*GITHUB_ENV\|tee -a "\$GITHUB_ENV"' .github/workflows/bu
   || echo "❌ CI 没有把时间戳导出到 GITHUB_ENV（各步骤会各算各的）"
 grep -q 'stamp-firmware.sh' .github/workflows/build.yml \
   || echo "❌ CI 里没调 stamp-firmware.sh（文件名不会带日期）"
-# CONFIG_VERSION_CODE_FILENAMES 必须钉死为 n：
-# 它默认是 y，开了会给 .bin 加**前缀**，和我们的**后缀**撞车变成两头都有日期
-grep -q 'CONFIG_VERSION_CODE_FILENAMES is not set' scripts/gen-config.sh \
-  || echo "❌ 没钉死 CONFIG_VERSION_CODE_FILENAMES=n（坑 15）"
-# ⚠️ 更根本的一条：CONFIG_VERSIONOPT 默认是 n，不打开的话
-#    CONFIG_VERSION_CODE 会被 make defconfig **静默删掉**，日志一切正常。
-#    Run #20 就是这么失败的（坑 15）。
-# ⚠️ 检查时必须匹配 **echo 语句本身**（用 -F 固定字符串）：
-#    只 grep "CONFIG_VERSIONOPT=y" 的话，脚本里那句回读校验
-#    `grep -qE '^CONFIG_VERSIONOPT=y$' .config` 也会命中，
-#    变成「注入语句被删了也照样通过」。
+# ⚠️ 版本串**不走 .config**，走 REVISION 环境变量（坑 15，Run #20/#21 连栽两次）。
+#    CONFIG_VERSION_CODE 在 `if IMAGEOPT` 的不可见菜单块里，
+#    defconfig 会静默删掉，而日志一切正常。
+grep -qF 'export REVISION="${REVISION:-$TENDA_BUILD_VERSION}"' scripts/gen-config.sh \
+  || echo "❌ gen-config.sh 没有 export REVISION（版本串不会生效）"
+grep -qF 'echo "REVISION=$TENDA_BUILD_VERSION" >> "$GITHUB_ENV"' .github/workflows/build.yml \
+  || echo "❌ CI 没有把 REVISION 导出到 GITHUB_ENV"
+grep -qF 'export REVISION=' scripts/build.sh \
+  || echo "❌ build.sh 没在自己这层 export —— gen-config.sh 是子进程，export 回不来"
+grep -qF 'echo "CONFIG_VERSION_CODE=' scripts/gen-config.sh \
+  && echo "❌ 还在往 .config 写 CONFIG_VERSION_CODE —— 会被 defconfig 删掉（坑 15）"
 grep -qF 'echo "CONFIG_VERSIONOPT=y"' scripts/gen-config.sh \
-  || echo "❌ 没写 CONFIG_VERSIONOPT=y —— 版本串会被 defconfig 丢掉"
-grep -qF 'echo "CONFIG_VERSION_CODE=\"$TENDA_BUILD_VERSION\""' scripts/gen-config.sh \
-  || echo "❌ 没把版本码写进 .config"
+  && echo "❌ 还在写 VERSIONOPT —— 它 if IMAGEOPT，不可见会被强制回默认值（坑 15）"
+# 保险丝：万一将来有人打开 VERSIONOPT，它的默认 y 会给 .bin 加前缀
+grep -qF 'echo "# CONFIG_VERSION_CODE_FILENAMES is not set" >> .config' scripts/gen-config.sh \
+  || echo "❌ 少了 CONFIG_VERSION_CODE_FILENAMES=n 的保险丝（坑 15）"
+# 真正的判据只能在固件产物里，不在 .config 里
+grep -q 'openwrt_release' scripts/verify-firmware.sh \
+  || echo "❌ verify-firmware.sh 没校验 /etc/openwrt_release —— 那是版本串唯一的真判据"
+# gen-feeds.sh 不能无脑 shallow fetch，否则 getver.sh 拿不到 r<N>
+grep -qF 'git cat-file -e "${OPENWRT_COMMIT}^{commit}"' scripts/gen-feeds.sh \
+  || echo "❌ gen-feeds.sh 会把仓库变成浅克隆，版本串里的 hash 拿不到（坑 15）"
 # 时间戳步骤必须排在 gen-feeds.sh 之后（那才 clone 出 OpenWrt 树，
 # getver.sh 在树里）。排在前面会得到 unknown-<时间戳>（Run #20 的教训）。
 sg=$(grep -n 'name: 生成构建时间戳' .github/workflows/build.yml | cut -d: -f1)

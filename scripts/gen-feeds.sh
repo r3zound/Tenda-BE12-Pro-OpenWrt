@@ -91,7 +91,24 @@ fi
 cd "$SRC"
 if [ "$(git rev-parse HEAD 2>/dev/null || echo '')" != "$OPENWRT_COMMIT" ]; then
   echo "${CYN}▸ 检出 OpenWrt $OPENWRT_COMMIT${RST}"
-  git fetch --depth 1 origin "$OPENWRT_COMMIT" 2>/dev/null || git fetch origin
+  # ⚠️⚠️ 不要无脑 `git fetch --depth 1`：
+  #    上面是 `git clone --filter=blob:none`，本来就有**完整历史**（只是 blob 被过滤）。
+  #    在这种仓库上再 `fetch --depth 1` 会把仓库变成**浅克隆**
+  #    （写 .git/shallow），历史被截断。
+  #    而 OpenWrt 树里的 scripts/getver.sh 依赖完整历史：
+  #      git rev-list ee53a240..HEAD | wc -l   → 算出 r<N> 里的那个 N
+  #    历史一截断，它就返回空 → 版本串退化成没有 hash 的样子
+  #    （Run #21 实测：immortalwrt-25.12 分支锁了 commit，走的就是这条路）。
+  #    所以先看看这个 commit 本来在不在本地（clone 全历史，通常在），
+  #    在就直接 checkout，只有真不在才浅拉。
+  if git cat-file -e "${OPENWRT_COMMIT}^{commit}" 2>/dev/null; then
+    echo "  ${OPENWRT_COMMIT} 已在本地历史里，直接检出（保持完整历史）"
+  else
+    git fetch origin "$OPENWRT_COMMIT" 2>/dev/null \
+      || git fetch --depth 1 origin "$OPENWRT_COMMIT" 2>/dev/null \
+      || git fetch origin
+    echo "  ${YEL}⚠️ 走了 fetch 分支，仓库可能是浅克隆，getver.sh 会拿不到 r<N>${RST}"
+  fi
   git checkout -B "$OPENWRT_BRANCH" "$OPENWRT_COMMIT"
 fi
 

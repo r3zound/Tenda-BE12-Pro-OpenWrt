@@ -25,14 +25,18 @@ DL_ONLY=0
 CLEAN=0
 
 # 构建时间戳：全程只算这一次。
-# ⚠️ 必须在**任何一步之前**算好并固定下来 —— 版本串（CONFIG_VERSION_CODE）
+# ⚠️ 必须在**任何一步之前**算好并固定下来 —— 版本串（REVISION）
 #    和文件名后缀必须是同一个值。gen-config.sh 和 stamp-firmware.sh 都会
 #    优先用这里的 TENDA_BUILD_STAMP，避免各算各的。
 if [ -z "${TENDA_BUILD_STAMP:-}" ]; then
-  TENDA_BUILD_STAMP="$(bj_stamp)"
-  [ -n "$TENDA_BUILD_STAMP" ] || { echo "❌ 算不出北京时间戳"; exit 1; }
+  eval "$(./scripts/build-stamp.sh "$SRC")"
+  [ -n "${TENDA_BUILD_STAMP:-}" ] || { echo "❌ 算不出北京时间戳"; exit 1; }
 fi
 export TENDA_BUILD_STAMP
+# ⚠️ REVISION 必须在**本脚本**里 export，不能指望 gen-config.sh 替我们做 ——
+#    那是子进程，export 出去了也回不来，而后面的 make 是本进程调的。
+#    include/toplevel.mk:13 明确支持从环境拿 REVISION。
+export REVISION="${REVISION:-$TENDA_BUILD_VERSION}"
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; CYN=$'\033[36m'; RST=$'\033[0m'
 

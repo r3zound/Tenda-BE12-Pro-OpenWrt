@@ -113,6 +113,7 @@ echo
 FAIL=0
 ok_()   { echo "    ${GRN}✅${RST} $1"; }
 bad_()  { echo "    ${RED}❌${RST} $1"; FAIL=1; }
+warn_() { echo "    ${YEL}⚠️ ${RST} $1"; }
 
 # ---- 3. 必须存在的文件 -----------------------------------------------------
 echo "  ${CYN}【必须存在】${RST}"
@@ -129,6 +130,50 @@ aurora 主题|/www/luci-static/aurora
 frpc 守护进程|/usr/bin/frpc
 frpc LuCI 配置|/etc/config/frpc
 EOF
+
+# ---- 3.1 版本标识：这里才是真正的判据 ---------------------------------------
+# ⚠️⚠️ 校验版本串**只能在这里做**，不能在 .config 里查。
+#    之前两次都栽在 .config 上（Run #20 / #21）：
+#      往 .config 写 CONFIG_VERSION_CODE → defconfig 静默删掉
+#      写 CONFIG_VERSIONOPT=y → 也被 defconfig 改写成 "is not set"
+#    因为那个菜单块是 `if IMAGEOPT` 的，IMAGEOPT 不开就是不可见的，
+#    不可见的 bool 会被强制回默认值，而日志里一切看着正常。
+#    现在改走 REVISION 环境变量（include/toplevel.mk:13 官方支持），
+#    产物只能到这里验 —— 而且这里验的正是**用户会看到的那一串**。
+echo
+echo "  ${CYN}【版本标识】${RST}"
+REL="$R/etc/openwrt_release"
+VERF="$R/etc/openwrt_version"
+if [ ! -f "$REL" ]; then
+  bad_ "固件里没有 /etc/openwrt_release"
+elif [ -z "${REVISION:-}" ]; then
+  warn_ "REVISION 未设置（本地跑抽查脚本时正常，CI 里必须有）"
+  echo "      当前固件里的实际内容："
+  sed 's/^/        /' "$REL" | head -8
+else
+  echo "    期望含: $REVISION"
+  if grep -qF "$REVISION" "$REL"; then
+    ok_ "openwrt_release 里有本次构建的版本标识"
+    grep -E "^DISTRIB_(RELEASE|REVISION|DESCRIPTION)" "$REL" | sed 's/^/      /'
+  else
+    bad_ "openwrt_release 里没有 $REVISION —— 版本串没生效"
+    echo "      实际内容："
+    sed 's/^/        /' "$REL" | head -8
+  fi
+  if [ -f "$VERF" ] && grep -qF "$REVISION" "$VERF"; then
+    ok_ "openwrt_version 里有本次构建的版本标识"
+  elif [ -f "$VERF" ]; then
+    bad_ "openwrt_version 里没有 $REVISION（内容: $(cat "$VERF" 2>/dev/null)）"
+  fi
+  # 反向：不能只剩光秃秃的 git revision，说明 REVISION 没注入成功
+  if grep -qE "DISTRIB_DESCRIPTION='[^']*SNAPSHOT r[0-9]+-[0-9a-f]+'$" "$REL" 2>/dev/null; then
+    bad_ "版本串只有上游 revision，没有我们的时间戳 —— REVISION 注入失败"
+  fi
+  # 文件名前后缀不能撞车：IMG_PREFIX_VERCODE 生效时文件里会出现两段日期
+  if grep -qE "[0-9]{8}\.[0-9]{4}-.*-[0-9]{8}\.[0-9]{4}" "$REL" 2>/dev/null; then
+    bad_ "版本串里出现了两段日期 —— CONFIG_VERSION_CODE_FILENAMES 被打开了"
+  fi
+fi
 
 # ---- 4. 预置内容抽查（不只看文件在不在，内容也要对）-----------------------
 echo

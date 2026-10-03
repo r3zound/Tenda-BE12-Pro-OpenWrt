@@ -35,11 +35,33 @@ if [ ! -d "$FILES_DIR/etc" ]; then
 fi
 
 # ---- 版本标识：把编译时间（北京时间）烧进固件 --------------------------------
-# 落点是 CONFIG_VERSION_CODE，它是 OpenWrt 留给二次编译方的官方字段：
-#   package/base-files/files/etc/openwrt_release 的 DISTRIB_DESCRIPTION='%D %V %C'
-#   %C 就是它 → LuCI「系统 → 系统」显示的那行版本串
-#   /etc/openwrt_version 也是它
-# 没设它时 OpenWrt 回退成 git revision（r1-9b95be917b），看不到构建时间。
+# ⚠️⚠️ 走的是 **REVISION 环境变量**，不是 CONFIG_VERSION_CODE。
+#
+# 为什么（Run #20 / #21 连栽两次才搞明白）：
+#   /etc/openwrt_release 的 DISTRIB_DESCRIPTION='%D %V %C'，
+#   %C 来自 CONFIG_VERSION_CODE，看着像是该往 .config 里写。
+#   但 package/base-files/image-config.in:161-163：
+#       menuconfig VERSIONOPT
+#           bool "Version configuration options" if IMAGEOPT
+#           default n
+#   所有 CONFIG_VERSION_* 都在这个菜单块里，而它自己又 `if IMAGEOPT`。
+#   IMAGEOPT 没开 → VERSIONOPT 不可见 → **不可见的 bool 会被 kconfig 强制回默认值**。
+#   实测：写进去的 `CONFIG_VERSIONOPT=y` 被 defconfig 改写成
+#         `# CONFIG_VERSIONOPT is not set`，而日志里照样打印
+#         "# configuration written to .config"，一切看着正常。
+#   （Run #21 打印出来的 .config 实际内容就只有那一行 is not set。）
+#
+# 正确入口是 include/toplevel.mk:13：
+#   else ifeq (…$(origin REVISION)…, …environmentenvironment)
+#     # Recursive calls of the top-level Makefile get both from its environment.
+#   else
+#     REVISION:=$(shell $(TOPDIR)/scripts/getver.sh)
+#   export REVISION
+#
+# 也就是说 **REVISION 可以从环境注入**，源码注释明说就是为了让递归 make 拿到它。
+# 注入后 VERSION_CODE := $(if $(VERSION_CODE),$(VERSION_CODE),$(REVISION))
+# 会用上我们的值 → DISTRIB_DESCRIPTION / DISTRIB_REVISION / openwrt_version 全对。
+# 附带好处：完全不碰 kconfig，就没有「defconfig 会不会把它吃掉」的问题。
 #
 # ⚠️ 时间戳在**构建机上算一次**然后烧死，不是开机时算 —— 设备时区是 CST-8
 #    但这里不该依赖它，否则改时区就得出两个版本号。
@@ -52,62 +74,35 @@ if [ -z "${TENDA_BUILD_VERSION:-}" ]; then
 	TENDA_BUILD_VERSION="$(build_version "$TENDA_BUILD_REV" "$TENDA_BUILD_STAMP")"
 fi
 
-{
-  echo ""
-  echo "# ---- 本项目附加：版本标识（build-stamp.sh 生成）----"
-  # ⚠️⚠️ CONFIG_VERSIONOPT 默认是 **n**（package/base-files/image-config.in:161-163
-  #    `menuconfig VERSIONOPT / bool "Version configuration options" / default n`）。
-  #    所有 CONFIG_VERSION_* 都在这个不可见的菜单块里，
-  #    **`make defconfig` 会把直接写进去的赋值丢掉** —— Run #20 就是这么失败的：
-  #    日志里 .config 写好了，「configuration written to .config」也正常，
-  #    但回读校验发现 CONFIG_VERSION_CODE 已经不见了。
-  #    所以必须先把这个开关打开，块里的选项才会被保留。
-  echo "CONFIG_VERSIONOPT=y"
-  echo "CONFIG_VERSION_CODE=\"$TENDA_BUILD_VERSION\""
-  # ⚠️ 而且打开 VERSIONOPT 之后，下面这个选项的 Kconfig 默认 **y** 会真正生效，
-  #    include/image.mk:49 的 IMG_PREFIX_VERCODE 就会把版本码作为**前缀**
-  #    插进 .bin 文件名，和我们自己在 stamp-firmware.sh 里加的**后缀**撞车，
-  #    结果是 r1-...-20261004.0031-openwrt-...-sysupgrade-20261004.0031.bin
-  #    两头都有日期。所以这里文件名的形态由我们自己掌控，必须钉死为 n。
-  echo "# CONFIG_VERSION_CODE_FILENAMES is not set"
-} >> .config
+export REVISION="${REVISION:-$TENDA_BUILD_VERSION}"
+echo "▸ 版本标识（经 REVISION 环境变量注入）"
+echo "  REVISION = $REVISION"
+echo "  LuCI 系统页会显示: OpenWrt SNAPSHOT $REVISION"
 
-echo "▸ 版本标识：$TENDA_BUILD_VERSION"
-echo "  (LuCI 系统页会显示 OpenWrt SNAPSHOT $TENDA_BUILD_VERSION)"
+# 保险：万一将来有人打开了 VERSIONOPT，CONFIG_VERSION_CODE_FILENAMES 的
+# Kconfig 默认 y 会给 .bin 加**前缀**，和 stamp-firmware.sh 的**后缀**撞车。
+echo "# CONFIG_VERSION_CODE_FILENAMES is not set" >> .config
 
 # 让 make 解析依赖并补全
 echo "▸ 运行 make defconfig 解析…"
 make defconfig
 
-# ---- 回读校验：写进 .config 不等于 make 认了 --------------------------------
+# ---- 回读校验 ---------------------------------------------------------------
+# ⚠️ 这里**不能**检查 .config 里的 CONFIG_VERSION_CODE —— 走 REVISION 路线
+#    根本不会有那一行，检查它必然误报（Run #21 就死在这）。
+#    真正的判据在 verify-firmware.sh：它解开 squashfs 直接看
+#    /etc/openwrt_release 里的真实内容，那才是用户看到的东西。
 echo "▸ 回读校验版本相关符号…"
-vfail=0
-if grep -q "^CONFIG_VERSION_CODE=\"$TENDA_BUILD_VERSION\"$" .config; then
-  echo "  ✅ CONFIG_VERSION_CODE = $TENDA_BUILD_VERSION"
-else
-  echo "  ❌ CONFIG_VERSION_CODE 没进 .config 或被 defconfig 改写（LuCI 会显示旧版本串）"
-  echo "     期望 .config 里有: CONFIG_VERSION_CODE=\"$TENDA_BUILD_VERSION\""
-  echo "     实际 .config 里相关行:"
-  grep -E 'CONFIG_VERSION' .config | sed 's/^/       /' || echo "       （一条都没有 —— VERSIONOPT 没打开？）"
-  vfail=1
-fi
-# 开关本身也要确认：没有它，块里的赋值会被 defconfig 丢掉
-if grep -qE '^CONFIG_VERSIONOPT=y$' .config; then
-  echo "  ✅ CONFIG_VERSIONOPT=y（版本选项所在的菜单块已打开）"
-else
-  echo "  ❌ CONFIG_VERSIONOPT 不是 y —— make defconfig 会丢掉 CONFIG_VERSION_CODE"
-  vfail=1
-fi
-# CONFIG_VERSION_CODE_FILENAMES 必须仍然是关的，否则文件名会出现两段日期
 if grep -qE '^CONFIG_VERSION_CODE_FILENAMES=y$' .config; then
-  echo "  ❌ CONFIG_VERSION_CODE_FILENAMES 被 defconfig 打开了 —— .bin 文件名会出现前缀+后缀两段日期"
-  echo "     .config 里那行现在是:"
+  echo "  ❌ CONFIG_VERSION_CODE_FILENAMES 被 defconfig 打开了"
+  echo "     .bin 文件名会出现前缀+后缀两段日期"
   grep -E 'CONFIG_VERSION_CODE_FILENAMES' .config | sed 's/^/       /'
-  vfail=1
-else
-  echo "  ✅ CONFIG_VERSION_CODE_FILENAMES 未开启（文件名前缀交给 stamp-firmware.sh）"
+  echo
+  echo "❌ 版本标识校验失败，终止。"
+  exit 1
 fi
-[ "$vfail" -eq 0 ] || { echo; echo "❌ 版本标识校验失败，终止。"; exit 1; }
+echo "  ✅ CONFIG_VERSION_CODE_FILENAMES 未开启（文件名前缀交给 stamp-firmware.sh）"
+echo "  ℹ️  版本串不经过 .config，靠 REVISION 注入，最终由 verify-firmware.sh 校验"
 
 # 校验关键项
 echo

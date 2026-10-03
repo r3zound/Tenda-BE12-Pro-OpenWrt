@@ -108,6 +108,13 @@ jobs:
           vals="$(./scripts/build-stamp.sh "$OPENWRT_SRC")"
           echo "$vals"
           echo "$vals" >> "$GITHUB_ENV"
+          # ⚠️⚠️ REVISION 必须一起导出 —— include/toplevel.mk:13 明确支持
+          #    从环境注入 REVISION（源码注释说就是为了让递归 make 拿到它）。
+          #    注入后 VERSION_CODE 会回退到它，/etc/openwrt_release 的
+          #    DISTRIB_DESCRIPTION 才会带上我们的时间戳。
+          #    ⚠️ 千万别改成往 .config 写 CONFIG_VERSION_CODE：那个符号在
+          #    `if IMAGEOPT` 的不可见菜单块里，defconfig 会静默删掉（Run #20/#21）。
+          echo "REVISION=$TENDA_BUILD_VERSION" >> "$GITHUB_ENV"
           # ⚠️ 上面是写到 GITHUB_ENV，**本步骤的 shell 里并没有这些变量** ——
           #    Run #20 里这行打出来是「LuCI 系统页会显示: OpenWrt SNAPSHOT 」（空的）。
           #    要在当前 shell 用，必须自己 eval 一遍。
