@@ -304,6 +304,56 @@ EOF
     fi
   fi
 
+  # ---- LuCI 主题注册守卫（第 11 个静默坑）----
+  # LuCI 主题下拉框在「系统 → 系统 → 设计」，数据源是
+  # /www/luci-static/resources/view/system/system.js:
+  #     const th = Object.keys(uci.get('luci','themes') || {}).sort();
+  # 也就是**只认 luci.themes 段的选项**，段空了/没了下拉框就是空的。
+  #
+  # 旧版 register_themes 的写法（已造成真实故障：设备上下拉框完全空白）：
+  #     uci -q delete luci.themes
+  #     uci set luci.themes.$t="/luci-static/$t"     ← 3 段式
+  # `uci set` 命令行在**段不存在时不会自动建段**，直接报
+  # `uci: Invalid argument` 并返回 1；而函数没有任何错误检查，
+  # 于是「删掉主题包注册好的段 → 重建失败 → 下拉框空白」，日志还打「已注册」。
+  # 只有 `uci batch`（以及 `uci add`）会顺带建段。
+  TSC="$R/etc/uci-defaults/99-tenda-custom"
+  if grep -qE "^[[:space:]]*uci[[:space:]]+set[[:space:]]+luci\.themes\." "$TSC" 2>/dev/null; then
+    bad_ "首启脚本用 uci set 写 luci.themes —— 段不存在时它不建段、直接报 Invalid argument（坑 11）"
+  else
+    ok_ "没有用 uci set 写 luci.themes（不走那条必失败的路径）"
+  fi
+  if grep -qE "uci[[:space:]]+batch" "$TSC" 2>/dev/null; then
+    ok_ "主题注册走 uci batch（会顺带建段）"
+  else
+    bad_ "主题注册没有走 uci batch —— luci.themes 段建不出来，下拉框会是空的"
+  fi
+  # 默认主题：用户要求 eamonxg/luci-theme-aurora 作内置默认
+  if grep -qE "^LUCI_DEFAULT_THEME='aurora'" "$TSC" 2>/dev/null; then
+    ok_ "默认主题为 aurora（eamonxg/luci-theme-aurora，用户 2026-10-03 指定）"
+  else
+    bad_ "默认主题不是 aurora —— 检查 LUCI_DEFAULT_THEME 的值"
+  fi
+  # 选项名不能带连字符：uci batch 的 set 解析器不接受，会静默丢弃该条
+  if grep -qE "set luci\.themes\.[A-Za-z0-9_]*-" "$TSC" 2>/dev/null; then
+    bad_ "luci.themes 的选项名里带连字符 —— uci batch 会静默丢弃（用 BootstrapDark 而非 bootstrap-dark）"
+  else
+    ok_ "luci.themes 选项名无连字符"
+  fi
+  # 必须有回读校验（坑 9/10/11 共同教训：赋值成功 ≠ 生效）
+  if grep -q "luci.themes" "$TSC" 2>/dev/null \
+     && grep -qE "uci -q show luci .*luci\\\\.themes\\\\." "$TSC" 2>/dev/null; then
+    ok_ "主题注册有回读校验（uci show 确认选项真的落库）"
+  else
+    bad_ "主题注册缺少回读校验 —— 无法发现注册静默失败"
+  fi
+  # aurora 必须真的打进固件
+  if [ -f "$R/usr/share/ucode/luci/template/themes/aurora/header.ut" ]; then
+    ok_ "固件内含 aurora 主题模板（header.ut）"
+  else
+    bad_ "固件里没有 aurora 的 header.ut —— 主题装了也渲染不出来"
+  fi
+
   # ---- 危险命令守卫 ----
   # AN8855AE 交换芯片下 /etc/init.d/network restart 会导致 LAN 失联、需断电，
   # 预置文件里绝不能把它当成操作指引告诉用户。
