@@ -1,0 +1,69 @@
+# Tenda BE12 Pro 无线预置
+# =============================================================================
+# 刷完直接能连：2.4G + 5G 同名 SSID，WPA2-PSK，默认启用。
+#
+# ⚠️⚠️⚠️ 密码是明文公开的默认值 ⚠️⚠️⚠️
+# 本仓库是公开仓库，下面这个 WiFi 密码会永久留在公开的 git 历史里。
+# 任何人都能通过 GitHub 搜到它，也就能连上你家 WiFi。
+# 这是明确知情的决定（用户 2026-10-03 确认：「直接写进仓库，我就知道会公开」）。
+# 首启脚本 setup_wifi() 也会 warn 提醒尽快改密码。
+#
+# 为什么这个文件必须预置在固件里，而不能只靠首启脚本 uci set：
+# ----------------------------------------------------------------------
+# 1. /etc/config/wireless **不在固件 rootfs 里**，它由 /sbin/wifi config 生成
+#    （ucode /lib/wifi/mac80211.uc，源数据是 /etc/board.json）。
+# 2. 生成发生在 uci-defaults 之后（或期间），会把首启脚本的修改洗掉。
+# 3. 更隐蔽的是段类型：在 wireless 配置还不存在时
+#        uci set wireless.default_radio0.disabled='1'
+#    会**新建一个类型叫 default_radio0 的伪段**（不是 wifi-iface），
+#    commit 写盘后 netifd 完全不认 —— 看起来执行成功，实际零效果。
+#    旧版 disable_wifi() 就是这么静默失效的：
+#    设备实际以 **无密码开放网络 `OpenWrt`** 上线（见 AGENTS.md 坑 10）。
+# 4. 本文件预置了带正确类型的 config wifi-device 'radio0'/'radio1'，
+#    mac80211.uc 的 radio_exists() 会因此跳过它们，不再重新生成。
+#    （已在实机验证：带着本文件跑 /sbin/wifi config，ASUS/psk2/CN 不会被覆盖）
+# =============================================================================
+
+config wifi-device 'radio0'
+	option type 'mac80211'
+	option path 'soc/11280000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
+	option radio '0'
+	option band '2g'
+	# country 必须是 CN：国内用 CN 监管域，不设会按错误的法规走功率上限和 DFS
+	# （旧 ImmortalWrt 上出现过 country='AU' 导致 5G 跑到 23 dBm）
+	option country 'CN'
+	option channel '1'
+	option htmode 'EHT20'
+	option disabled '0'
+
+config wifi-iface 'default_radio0'
+	option device 'radio0'
+	option network 'lan'
+	option mode 'ap'
+	option ssid 'ASUS'
+	# psk2 = WPA2-PSK (CCMP)。刻意不用 sae —— sae 会变成 WPA3
+	option encryption 'psk2'
+	option key 'abcd1234.'
+	option disabled '0'
+
+config wifi-device 'radio1'
+	option type 'mac80211'
+	option path 'soc/11280000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
+	option radio '1'
+	option band '5g'
+	option country 'CN'
+	# 信道 36 + 80MHz：避开 100-144 的 DFS 频段，国内无需等待信道探测
+	option channel '36'
+	option htmode 'EHT80'
+	option disabled '0'
+
+config wifi-iface 'default_radio1'
+	option device 'radio1'
+	option network 'lan'
+	option mode 'ap'
+	# 与 2.4G 同名：客户端按信号强度自行选频段，等效于漫游，
+	# 与用户原先 ImmortalWrt 上的用法一致
+	option ssid 'ASUS'
+	option encryption 'psk2'
+	option key 'abcd1234.'
+	option disabled '0'
