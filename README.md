@@ -10,12 +10,49 @@
 | 阶段 | 状态 |
 |------|------|
 | **需求确认** | ✅ **全部完成**（见 §10） |
-| README 编写 | ✅ 本文件 |
-| 构建体系搭建 | ✅ 完成（脚本已通过语法与逻辑验证） |
-| 首个固件出包 | ⬜ 待运行 CI |
-| 上机验证 | ⬜ 未开始 |
+| README 编写 | ✅ 本文件（1080+ 行） |
+| 构建体系搭建 | ✅ 完成并跑通 |
+| **首个固件出包** | ✅ **成功**（CI Run #13 / #14，详见 §13） |
+| **构建内容校验** | ✅ 24 项全过（本地独立复核） |
+| **上机验证** | ⬜ **未开始** ← 当前唯一未完成项 |
 
-**设备现状**（2026-10-02 由用户实测提供）：
+### 已交付的固件
+
+| 项 | 值 |
+|----|----|
+| CI Run | [#13](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37023632916) · [#14](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37010440652)（同内容） |
+| 提交 | `9e3e19a` / `c6caa27` |
+| 编译耗时 | 82 分钟（GitHub Actions ubuntu-latest） |
+| sysupgrade 大小 | 19,149,065 字节（18 MB） |
+| sysupgrade SHA256 | `0dde4645833534268343f4c6b700d1285a2c535fc6f1e80379237c7279049538` |
+| initramfs SHA256 | `cca69926d841aff3689d354c03dae396f5f37572df93bc0d6938f80e32a24144` |
+| OpenWrt 基线 | `3f26ab3d4d973fdbd3a1593a68e8186f5cc58dbd` |
+| 内核 | 6.18.54（用户当前 ImmortalWrt 是 6.18.52） |
+| rootfs（squashfs） | **13 MB**（刷进去实际占分区） |
+| 展开体积 | 40 MB / 1411 个文件（仅参考） |
+| **rootfs_data** | **73 MB** ← 装插件、存配置的空间 |
+| 固件包数量 | 1411 个 |
+| fwtool 元数据 | ✅ `supported_devices: ["tenda,be12-pro"]` |
+
+### 内容校验结果（24 项全过）
+
+```
+【必须存在】                                                    【预置内容】
+  ✅ 预置网段+双WAN /etc/config/network                           ✅ LAN 地址 = 192.168.100.254
+  ✅ 首次启动脚本 99-tenda-custom                                  ✅ 含 lan3（移动 WAN2 接口）
+  ✅ mwan3 安装助手                                               ✅ 含 eth2（电信 WAN1 接口）
+  ✅ bootstrap 主题                                              ✅ 99-tenda-custom 有 shebang（会执行）
+  ✅ argon 主题                                                  ✅ 99-tenda-custom 换行符正常（LF）
+  ✅ aurora 主题                                                  ✅ 99-tenda-custom shell 语法正确
+  ✅ frpc 守护进程                                                ✅ 预置 DHCP 池起点 .100
+  ✅ frpc LuCI 配置                                               ✅ 预置 DHCP 池数量 100
+                                                                ✅ 预置 防火墙 wan 区挂 wan2
+【必须不存在】                                                    ✅ 预置 防火墙 lan 区放行
+  ✅ mwan3 / passwall / sing-box / openclash / xray 全已排除      ✅ 预置 时区 CST-8
+                                                                ✅ 预置 主机名 Tenda-BE12-Pro
+```
+
+### 设备现状（2026-10-02 用户实测）
 
 | 项 | 值 |
 |----|----|
@@ -23,10 +60,14 @@
 | 构建时间 | 2026-09-20 10:53 (UTC+8) |
 | 内核 | 6.18.52 |
 | 设备树 | `tenda,be12-pro` |
+| UBI 分区 | 90 MB（`0xd80000`–`0x6780000`） |
+| UBI 卷 | `rootfs` 9.4 MB + `rootfs_data` 74.7 MB |
 | 硬件确认 | 9 天线通路（4T4R + 5T5R），eFEM 4-4 变体 ✅ |
 
-> ⚠️ **本项目固件未经上机验证。** 在你本机刷入并确认可用前，请勿将其用于生产网络。
+> ⚠️ **固件已构建并校验，但未经上机验证。** 在你本机刷入并确认可用前，请勿将其用于生产网络。
 > 始终保留可用的回原厂路径（见 §8）。
+>
+> 📌 用户此前尝试刷 Run #5 失败，根因是**文件传输截断**（见 §4.9），不是固件问题。
 
 ---
 
@@ -775,26 +816,47 @@ sysupgrade -T openwrt-...bin               # 3. 试刷（只校验，不写盘�
 
 ```
 Tenda-BE12-Pro-OpenWrt/
-├── README.md                    本文件
-├── LICENSE                      MIT（构建脚本与配置）
-├── versions.lock                ⭐ 所有上游组件的 commit 锁定
+├── README.md                        本文件
+├── AGENTS.md                        ⭐ AI 交接文档（接手先读这个）
+├── LICENSE                          MIT（构建脚本与配置）
+├── versions.lock                    ⭐ 所有上游组件的 commit 锁定
+├── .gitattributes                   强制 LF（防 CRLF 污染 uci-defaults）
+├── .gitignore
 ├── configs/
-│   └── base.config              .config 片段
-├── files/                       预置到镜像的文件（FILES_DIR）
-│   ├── etc/config/              network / firewall / dhcp / system / dropbear
-│   ├── etc/uci-defaults/
-│   │   └── 99-tenda-custom      首启脚本：镜像源/LAN/主题/无线/硬件记录
-│   └── usr/lib/tenda/
-│       ├── install-mwan3.sh     ⭐ mwan3 nft 移植版安装器
-│       └── mwan3-README.md      mwan3 配置参考
+│   └── base.config                  .config 片段（120 行）
+├── package/                         ⭐ 本地包（挂到 OpenWrt 的 package/ 下）
+│   └── tenda-preset/                预置配置包
+│       ├── Makefile                 (90 行) 为什么要做成包见文件头注释
+│       └── files/                   与顶层 files/ 同内容（构建时实际读取这里）
+│           ├── etc/config/          network（其余四项由 uci-defaults 写入）
+│           ├── etc/uci-defaults/99-tenda-custom   (299 行) 首启脚本
+│           └── usr/lib/tenda/       install-mwan3.sh + mwan3-README.md
+├── files/                           预置文件源（由 package/tenda-preset/files 同步）
+├── docs/                            调试过程留档
+│   ├── dts.txt                      设备树片段
+│   ├── fl.mk                        官方 filogic.mk 的相关片段
+│   ├── nw.txt                       网络配置草稿
+│   └── prof.json                    board.json
 ├── scripts/
-│   ├── gen-feeds.sh             从 versions.lock 生成 feeds.conf
-│   ├── gen-config.sh            生成并校验 .config
-│   ├── build.sh                 一键构建
-│   └── size-guard.sh            ⭐ 体积守卫
+│   ├── gen-feeds.sh                 (227 行) 从 versions.lock 生成 feeds.conf
+│   ├── gen-config.sh                (71 行)  生成并校验 .config
+│   ├── build.sh                     (212 行) 一键构建（本地）
+│   ├── fetch-extra-packages.sh      (165 行) ⭐ 挂载「根 Makefile」仓库到 package/
+│   ├── size-guard.sh                (163 行) ⭐ 体积守卫
+│   ├── verify-firmware.sh           (215 行) ⭐⭐ 固件内容抽查（编译后必跑）
+│   └── lib/
+│       └── ensure-unsquashfs.sh     (89 行)  三级兜底获取 unsquashfs
 └── .github/workflows/
-    └── build.yml                CI（16 步）
+    └── build.yml                    CI（22 步）
 ```
+
+> ⚠️ **顶层 `files/` 与 `package/tenda-preset/files/` 是重复的两份。**
+> 顶层那份是「源」，改完记得同步：
+> ```sh
+> rm -rf package/tenda-preset/files && cp -r files package/tenda-preset/files
+> ```
+> 构建时实际被 Makefile 读取的是 `package/tenda-preset/files/`，顶层那份不参与构建。
+> 原因：预置配置必须做成 OpenWrt 的包才能进镜像（详见 `package/tenda-preset/Makefile` 头注释）。
 
 ### 6.1 GitHub Actions（推荐，优先级更高）
 
@@ -1078,3 +1140,293 @@ dd if=/dev/mtd1 of=/tmp/u-boot-env.bin bs=64k count=8
 | mwan3 (nft port，刷机后安装) | GPL-2.0 |
 
 > 固件二进制产物**不随本仓库分发**，请自行编译或从 Actions Artifacts 获取。
+
+---
+
+## 13. 开发历程与工程方法论
+
+> 本章是接手这个项目最该先读的部分。前 12 章讲「是什么、怎么做」，
+> 这一章讲「**踩过哪些坑，以及怎么判断一个构建是不是真的成功**」。
+
+### 13.1 提交历史
+
+从第一次搭建到出包，一共 12 次提交，其中 **8 次是修 CI**：
+
+| # | 提交 | 内容 |
+|---|------|------|
+| 1 | `c1bfdd5` | 搭建完整构建体系（脚本 + 配置 + CI） |
+| 2 | `b535ecc` | feeds.conf 语法：feed 名不允许连字符 |
+| 3 | `70cd7dc` | feeds.conf 语法：不允许裸 `#` 空注释行 |
+| 4 | `c6e403a` | feeds.conf：去引号 + ref 用 `^` 分隔 commit |
+| 5 | `5087a46` | 修正 `CONFIG_TARGET_MULTI_PROFILE` 设备选择冲突；移除污染源 edge 主题；第三方包精确安装 |
+| 6 | `1bdb60d` | **修复三个 LuCI 主题静默丢失** + 体积守卫空壳 |
+| 7 | `af98078` | **预置配置打进固件**（做成包）+ 校验工具改用真 unsquashfs |
+| 8 | `d3cbbec` | 裸 `#` 行 + `tenda-preset/files` 被误删 |
+| 9 | `f1b69ae` | 恢复 `feeds install -a -p luci`（误删导致整个 LuCI 消失） |
+| 10 | `8e52688` | apk 文件归属冲突 → dhcp/firewall 改走 `uci batch` |
+| 11 | `9e3e19a` | **解包成功却判失败** → 改用产物判据而非退出码 |
+| 12 | `c6caa27` | 文档：修正小节编号 + 新增 §4.9 |
+
+**Run #13 / #14 首次全绿。** 编译耗时 82 分钟。
+
+### 13.2 ⚠️ 完整坑位清单（8 个，全部静默失败）
+
+这八个坑有一个共同点：**链路上没有任何一个环节会报错**。
+它们的共同形态是「编译成功 → CI 绿 → 守卫过 → 固件里东西是错的」。
+
+---
+
+#### 坑 1：feeds 索引不到「根 Makefile」仓库
+
+**症状**：argon / aurora / argon-config 三个主题全都不在固件里，CI 全绿。
+
+**根因**：OpenWrt 的 `include/scan.mk` 这样扫包：
+
+```make
+find -L $(SCAN_DIR) -mindepth 1 -maxdepth $(SCAN_DEPTH) -name Makefile
+                      ^^^^^^^^^^^^^
+```
+
+`-mindepth 1` 把 feed 根目录本身排除了。而 jerrykuku/luci-theme-argon、
+eamonxg/luci-theme-aurora 这类**单包仓库的 Makefile 就在根目录**，于是：
+
+| 步骤 | 现象 |
+|------|------|
+| `feeds update -a` | ✅ 成功，仓库正常 clone |
+| `feeds install <名字>/<包名>` | ✅ **退出码 0，无任何输出** |
+| 索引生成 | 0 个包（官方 luci 173 个、packages 1452 个，第三方全 0） |
+| `make defconfig` | ✅ 成功，`CONFIG_PACKAGE_luci-theme-argon` **符号压根不存在** |
+| `make` | ✅ 全绿 |
+| 刷机后 | 主题列表里没有 argon，也没有 aurora |
+
+**解法**：`scripts/fetch-extra-packages.sh` 绕开 feeds，直接 clone 到 `package/`
+（`package/` 的扫描深度下正好落在 depth 1）。脚本会在 clone 后**断言**
+`Makefile` 存在且含 `call BuildPackage`，不满足直接失败。
+
+---
+
+#### 坑 2：预置配置根本没进固件
+
+**症状**：固件是官方默认配置，管理地址 192.168.1.1，双 WAN 划分不存在。
+
+**根因**：`build.sh` 里有句注释「OpenWrt 通过 `CONFIG_TARGET_ROOTFS_INCLUDE_KERNEL` +
+`FILES_DIR` 注入」—— **这套机制根本不存在**。`include/target.mk` 里的
+`GENERIC_FILES_DIR` 是 target 自己的 files 目录，与自定义 rootfs 注入无关。
+那段代码只是打印了文件名，什么也没接上。
+
+**实锤方式**：用 `unsquashfs` 解开固件 grep `/etc/config/network` —— 连
+**官方默认的 `/etc/config/network` 和 `/etc/config/system` 都不在里面**。
+
+**解法**：做成真正的 OpenWrt 包 `package/tenda-preset`。
+
+---
+
+#### 坑 3：apk 文件归属冲突导致零产出
+
+**症状**：编译报成功，但 `bin/` 里只有 7 个 bl2 二进制，**固件本体一个都没有**。
+
+```
+ERROR: tenda-preset: trying to overwrite etc/config/dhcp owned by dnsmasq
+ERROR: tenda-preset: trying to overwrite etc/config/dropbear owned by dropbear
+ERROR: tenda-preset: trying to overwrite etc/config/firewall owned by firewall4
+1 error; 39.3 MiB in 220 packages
+make[2]: *** [package/Makefile:164: package/install] Error 1
+```
+
+apk 严格维护文件归属。`/etc/config/dhcp` 属于 dnsmasq、`dropbear` 属于
+dropbear、`firewall` 属于 firewall4。`network` 和 `system` 无人声明归属，
+所以它们没冲突。
+
+**解法**：只有 `/etc/config/network` 随包直接安装；
+dhcp / firewall / dropbear / system 改由 `99-tenda-custom` 在首启时用
+`uci batch` 写入（OpenWrt 官方发默认配置的正统做法）。
+
+---
+
+#### 坑 4：`unsquashfs` 解包成功却返回非 0
+
+**症状**：`verify-firmware.sh` 报「unsquashfs 解包失败」，但同一轮里
+`size-guard.sh` 读出了 1411 个文件 / 40 MB。
+
+**根因**：两个脚本的解包命令**逐字相同**，唯一差别是结尾：
+
+```sh
+size-guard.sh  :  "$USQ" -f -d ... || true              # 吞掉，照常报通过
+verify-firmware:  "$USQ" -f -d ... || { exit 2; }       # 老实查退出码 → 炸
+```
+
+`unsquashfs` 解包**成功后仍返回非 0**（末尾告警被计进退出码）。
+
+**这里有个更值得记的教训**：`size-guard.sh` 当时是**蒙混过关**的 ——
+它压根没意识到自己"失败"了。一个会静默失效的守卫比没有更糟。
+
+**解法**：用**产物**判断成败（目录建了没、文件数够不够、有没有标志性目录），
+不看退出码。`size-guard.sh` 也不再 `|| true` 后继续报绿，解包失败就 exit 2。
+
+---
+
+#### 坑 5：heredoc 里的反引号触发命令替换
+
+**症状**：`feeds.conf` 里灌进一万多个文件路径，语法校验直接失败。
+
+**根因**：注释里写了
+
+```
+#    的 Makefile 在仓库根目录，而 include/scan.mk 的 `find -mindepth 1`
+```
+
+heredoc 是**无引号的**（`<<EOF`，为了展开 `$LUCI_REPO` 等变量），
+所以这对反引号被 shell 当成命令替换，**真的在 OpenWrt 源码树里跑了一遍 find**。
+
+**解法**：说明移到 heredoc 块外；块内禁用反引号。并在校验器里加了断言 ——
+feed 定义数超过 20 条就报「疑似反引号触发了命令替换」。
+
+---
+
+#### 坑 6：`<<UCI` 与 `<<-UCI` 的区别（会静默不执行）
+
+**症状**：`99-tenda-custom` 在设备上不执行，设备起来是半成品。
+
+**根因**：为了让 `$zlan` 这类变量展开，把 heredoc 从 `<<-'UCI'` 改成了 `<<UCI`。
+但**不带横杠的 heredoc 结束符必须顶格**，而脚本里是 TAB 缩进的：
+
+```
+Syntax error: end of file unexpected (expecting "}")
+```
+
+shell 一直读到 EOF，整个首次启动配置**静默不执行**。
+
+**正确写法是 `<<-UCI`**：带横杠才剥 TAB，同时允许变量展开。
+这个错误在设备上极难排查，`sh -n` 一秒抓到。
+
+---
+
+#### 坑 7：`rm -rf files` 把构建素材删了
+
+**症状**：make 一路跑到 install 阶段才炸。
+
+**根因**：`tenda-preset/Makefile` 的 install 规则靠 `$(CP) ./files/...` 读取素材，
+而 `build.sh` 和 `build.yml` 里我写了个「优化」：
+
+```sh
+rm -rf .../package/tenda-preset/files    # "构建完就不需要了"
+```
+
+**解法**：删掉这两行。`package/` 下的 `files/` 里没有 Makefile，
+`include/scan.mk` 扫不到它，本来也无需清理。
+
+---
+
+#### 坑 8：误删 `feeds install -a -p luci`
+
+**症状**：整个 LuCI 界面消失。
+
+```
+WARNING: Makefile 'package/luci-theme-aurora/Makefile' has a dependency
+         on 'luci-base', which does not exist
+❌ CONFIG_PACKAGE_luci=y  (缺失或被依赖覆盖)
+❌ CONFIG_LUCI_LANG_zh_Hans=y
+```
+
+**根因**：改 build.yml 时把这一行整行删了。当时的想法是"少装点，避免全量引入" ——
+**完全想反了**。`-a -p luci` 的作用是**把 luci feed 的包放进
+`package/feeds/luci/` 让 kconfig 能看见**（173 个），**不是把它们都装进固件**。
+真正进固件的只有 `base.config` 里写成 `=y` 的那几个。
+
+**解法**：恢复该行，加详细注释。关键包校验清单补上 `luci` / `luci-base`。
+`build.sh` 里的同一行还在，所以本地和 CI 早就分叉了 —— 是新加的校验步骤抓到的。
+
+---
+
+### 13.3 ⭐ 验证方法论：怎么判断一个构建是不是真的成功
+
+**核心原则：编译成功 ≠ 内容正确。看 CI 绿不绿、看守卫生不通过，都发现不了上面那八个坑。**
+
+本项目现在有三道闸门，缺一不可：
+
+| 闸门 | 位置 | 抓什么 |
+|------|------|--------|
+| **① 关键包校验** | `.config` 生成后，`make` 之前 | 包有没有被发现（坑 1、8） |
+| **② 体积守卫** | 编译后 | rootfs 占多少、插件空间还剩多少（坑 3） |
+| **③ 固件内容抽查** | 编译后 | ⭐ **解开 squashfs 逐项核对**（坑 2、3、4、6、7） |
+
+**① 关键包校验**必须在 `make` 之前 —— kconfig 对未知符号既不报错也不警告，
+晚一步就是 80 分钟白跑：
+
+```sh
+for p in luci luci-base luci-theme-bootstrap luci-theme-argon \
+         luci-theme-aurora luci-app-argon-config luci-app-frpc \
+         frpc tenda-preset; do
+  grep -qE "^CONFIG_PACKAGE_${p}=y" .config || { echo "❌ $p 缺失"; exit 1; }
+done
+# 还要反向断言：不该在的包确实不在
+for p in mwan3 passwall sing-box xray; do
+  grep -qE "^CONFIG_PACKAGE_${p}=y" .config && { echo "❌ $p 不该在"; exit 1; }
+done
+```
+
+**③ 固件内容抽查**是唯一能抓到「编译全绿但内容错」的闸门。它不依赖 `unsquashfs`
+的退出码（坑 4），用产物判据：
+
+```sh
+"$USQ" -f -d "$dst" "$ROOTFS" >/dev/null 2>&1 || true   # 退出码不可靠
+[ -d "$dst" ] || return 1
+[ "$(find "$dst" -type f | wc -l)" -ge 50 ] || return 1
+[ -e "$dst/etc/uci-defaults" ] || return 1              # 抽查标志目录
+```
+
+**本地自查固件的三条命令**（拿到任何 sysupgrade 镜像都该先跑）：
+
+```sh
+# 1. 完整性
+sha256sum -c sha256sums
+
+# 2. 元数据（断流就丢这里，见 §4.9）
+fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
+
+# 3. 内容（需要 unsquashfs 支持 xz）
+./scripts/verify-firmware.sh <含 bin/targets/mediatek/filogic/ 的目录>
+```
+
+**推之前先在本地跑，别拿 CI 当调试器。** 最后三个坑（4、6、7）都是在提交前
+本地实跑才发现的 —— CI 每次 80 分钟，代价太高。
+
+### 13.4 CI 流水线 22 步
+
+| # | 步骤 | 作用 | 关键点 |
+|---|------|------|--------|
+| 1-2 | Set up / 检出 | | |
+| 3 | 安装构建依赖 | | |
+| 4-5 | 配置/恢复 ccache | | |
+| 6 | 校验 versions.lock | | |
+| 7 | 生成 feeds.conf | `gen-feeds.sh` | 复刻官方解析器校验 |
+| 8 | 校验 feeds.conf 语法 | | |
+| 9 | 拉取 feeds | `feeds install -a -p luci` + `frp/frpc` | ⚠️ 这行不能省（坑 8） |
+| 10 | 挂载第三方包到 `package/` | `fetch-extra-packages.sh` | 绕开 feeds（坑 1） |
+| 11 | 挂载预置配置包 | `cp -r package/tenda-preset` | ⚠️ 不能删 `files/`（坑 7） |
+| 12 | 生成 `.config` | `gen-config.sh` | |
+| 13 | **校验关键包已进 .config** | | ⭐ 闸门① |
+| 14 | 下载源码 | `make download` | |
+| 15 | **编译固件** | `make -j$(nproc)` | 82 分钟 |
+| 16 | 记录构建信息 | | 产出 `config.buildinfo` |
+| 17 | 生成校验和 | | `sha256sums` |
+| 18 | **体积守卫** | `size-guard.sh` | ⭐ 闸门② |
+| 19 | **固件内容抽查** | `verify-firmware.sh` | ⭐⭐ 闸门③ |
+| 20 | 上传 ccache | | |
+| 21 | **上传固件产物** | | ⚠️ `if: always()` |
+| 22 | 发布 Release（仅 tag） | | |
+
+> 📌 第 21 步的 `if: always()` 是被逼出来的：之前校验一失败就跳过上传，
+> 「固件有问题但拿不到固件」，只能靠 69MB 日志反推，还总被下载截断。
+
+### 13.5 改配置时的注意事项
+
+| 想改什么 | 改哪里 | 注意 |
+|---------|--------|------|
+| 升级上游版本 | `versions.lock` | 取 SHA：<br>`curl -sL "https://github.com/<o>/<r>/commits/<branch>.atom" \| grep -oE '/commit/[0-9a-f]{40}' \| head -1 \| sed 's\|/commit/\|\|'` |
+| 加/减固件内的包 | `configs/base.config` | 改完跑 `gen-config.sh`；⚠️ 别手工改 `.config` |
+| 加第三方 feed | `versions.lock` + `gen-feeds.sh` | ⚠️ feed 名只允许 `[A-Za-z0-9_]`，**禁止连字符** |
+| 加第三方包 | `versions.lock` + `fetch-extra-packages.sh` | 仅当 Makefile **不在**仓库根目录时才用 feeds |
+| 改预置配置 | 顶层 `files/` → **同步到** `package/tenda-preset/files/` | 两份要手动同步 |
+| 加校验项 | `verify-firmware.sh` 的清单 | 用 `grep -qF`（固定串），**别用 `grep -q`** —— `[0]` 会被当正则字符类 |
+
