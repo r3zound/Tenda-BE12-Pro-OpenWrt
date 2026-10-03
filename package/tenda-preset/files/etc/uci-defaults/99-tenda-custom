@@ -274,6 +274,39 @@ WIFI_KEY='abcd1234.'
 WIFI_ENC='psk2'          # psk2 = WPA2-PSK (CCMP)；sae 会变成 WPA3
 
 setup_wifi() {
+	# ---- 前置自愈：确保 wireless 配置存在且段类型正确 -----------------------
+	# files/etc/config/wireless 已经预置了完整配置，正常情况下这里什么都不做。
+	# 但如果这个文件被用户/构建过程弄丢了，下面 uci set 会**新建错误类型的伪段**
+	# （`uci set wireless.default_radio0.x=1` 在段不存在时会造一个类型叫
+	#  default_radio0 的段，不是 wifi-iface，netifd 完全不认），
+	# 看起来执行成功、实际零效果 —— 旧的 disable_wifi() 就是这么静默失效的，
+	# 设备一度以**无密码开放网络 `OpenWrt`** 上线。
+	# 所以先检查，缺就调用官方生成器补上（/sbin/wifi config → mac80211.uc）。
+	# 注意 `uci get <包>.<段>` 返回的是**段类型**，所以这一句同时能识破伪段：
+	# 伪段会返回 default_radio0 而不是 wifi-device。
+	if [ ! -f /etc/config/wireless ] \
+	   || [ "$(uci -q get wireless.radio0 2>/dev/null)" != "wifi-device" ] \
+	   || [ "$(uci -q get wireless.radio1 2>/dev/null)" != "wifi-device" ]; then
+		warn "wireless 配置缺失或段类型不对，调用 /sbin/wifi config 重新生成"
+		# ⚠️ 文件在、但段类型不对时**必须先移走**，不能直接让生成器往里补：
+		#    mac80211.uc 的 radio_exists(path, macaddr, phy, radio) 是按
+		#    `option radio` 索引和 `option path` 匹配的，而本机两个频段
+		#    **共用同一条 PCIe path**（soc/11280000.pcie/...），
+		#    所以它可能认为「已经有一个 wifi-device 占了」而跳过需要补的那一段，
+		#    留下半残配置。移走 → 走「从零生成」这条已验证可靠的路。
+		if [ -f /etc/config/wireless ]; then
+			mv /etc/config/wireless "/tmp/wireless.broken.$$" 2>/dev/null
+		fi
+		/sbin/wifi config >/dev/null 2>&1
+		# 生成器要等它落盘
+		sleep 2
+		# 再确认一次：移走之后必须真的生成了正确的段类型
+		if [ "$(uci -q get wireless.radio0 2>/dev/null)" != "wifi-device" ] \
+		   || [ "$(uci -q get wireless.radio1 2>/dev/null)" != "wifi-device" ]; then
+			warn "重新生成后段类型仍不对，请进 LuCI 手工重建无线（备份在 /tmp/wireless.broken.*）"
+		fi
+	fi
+
 	# ---- 射频：国家码 / 信道 / 带宽 ----------------------------------------
 	# 5G 用 36 信道 + 80MHz（避开 100-144 的 DFS 频段，国内无需等待）
 	uci set wireless.radio0.country='CN' 2>/dev/null
@@ -297,19 +330,31 @@ setup_wifi() {
 	done
 	uci commit wireless 2>/dev/null
 
+	# ---- 段类型复核（坑 9 / 坑 10 的共同教训：赋值成功 ≠ 段类型对）----------
+	local bad_type
+	bad_type="$(uci -q export wireless 2>/dev/null | grep -E "^config " | grep -vE "^config (wifi-device|wifi-iface) ")"
+	if [ -n "$bad_type" ]; then
+		warn "wireless 里出现了非预期的段类型："
+		echo "$bad_type" | sed 's/^/      /'
+	fi
+
 	# ---- 生效 --------------------------------------------------------------
 	reload_config
 
-	# ---- 回读确认（4 项，缺一即告警）--------------------------------------
+	# ---- 回读确认（6 项，缺一即告警）--------------------------------------
+	# 段类型也纳入回读：只看 uci get 会被伪段骗过去
 	local ok=0
 	[ "$(uci -q get wireless.default_radio0.ssid)" = "$WIFI_SSID" ] && ok=$((ok+1))
 	[ "$(uci -q get wireless.default_radio1.ssid)" = "$WIFI_SSID" ] && ok=$((ok+1))
 	[ "$(uci -q get wireless.default_radio0.encryption)" = "$WIFI_ENC" ] && ok=$((ok+1))
+	[ "$(uci -q get wireless.default_radio1.encryption)" = "$WIFI_ENC" ] && ok=$((ok+1))
+	# country 在 **radio** 上，不在 wifi-iface 上 —— 取错了会永远差 1 分
+	[ "$(uci -q get wireless.radio0.country)" = "CN" ] && ok=$((ok+1))
 	[ "$(uci -q get wireless.default_radio1.disabled)" = "0" ] && ok=$((ok+1))
-	if [ "$ok" -eq 4 ]; then
+	if [ "$ok" -eq 6 ]; then
 		log "无线已配置并启用：SSID=$WIFI_SSID 加密=WPA2-PSK（2.4G + 5G 同名）"
 	else
-		warn "无线配置只确认了 $ok/4 项，请进 LuCI 复核"
+		warn "无线配置只确认了 $ok/6 项，请进 LuCI 复核"
 	fi
 	warn "⚠ WiFi 密码是写在公开仓库里的默认值，建议尽快在 LuCI 里改成你自己的"
 }
