@@ -76,6 +76,16 @@ step "生成 feeds.conf"
 "$ROOT/scripts/gen-feeds.sh" "$SRC" >/dev/null || die "feeds 生成失败"
 ok "feeds.conf 就绪（全部锁定 commit）"
 
+# ---- 1.5 板级移植 -----------------------------------------------------------
+# ⛔ 这一步是本分支存在的全部意义。
+# ImmortalWrt openwrt-25.12 **没有** Tenda BE12 Pro 这个板子
+# （实测 filogic.mk 里 0 次提及），必须把设备树、板子定义和
+# 原厂私有镜像头脚本补进去，否则 make menuconfig 里根本选不到这台设备。
+# 详见 patches/immortalwrt-25.12/board-port.mk 头部说明。
+# 幂等，可重复执行。
+step "板级移植（设备树 + 板子定义 + 镜像头）"
+"$ROOT/scripts/apply-board-port.sh" "$SRC" || die "板级移植失败"
+
 # ---- 2. 更新 feeds ---------------------------------------------------------
 step "拉取 feeds"
 cd "$SRC"

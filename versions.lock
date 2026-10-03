@@ -1,96 +1,98 @@
 # ============================================================================
-# 版本锁定 — 保证构建可复现
-# ----------------------------------------------------------------------------
-# 所有上游仓库都锁定到具体 commit，不使用分支名。
-# 升级任一组件时：改这里 → 重新构建 → 验证 → 提交。
+# 版本锁定 — Tenda BE12 Pro / ImmortalWrt 25.12 分支
+# -----------------------------------------------------------------------------
+# ⚠️ 本文件属于 immortalwrt-25.12 分支，与 main 分支**不是同一套源**。
+#    main 分支编 OpenWrt mainline SNAPSHOT（内核 6.18），那个分支才是日常用的。
+#    切分支时别把两个 versions.lock 搞混。
 #
-# 获取最新 SHA：
-#   curl -sL "https://github.com/<owner>/<repo>/commits/<branch>.atom" \
-#     | grep -oE '/commit/[0-9a-f]{40}' | head -1 | sed 's|/commit/||'
+# 为什么单独开一个分支编 ImmortalWrt：
+#   main 走 OpenWrt SNAPSHOT，滚动更新、内核 6.18，固件里 LuCI 跑的是 master
+#   （坑 11 的主题兼容性问题就是从这来的）。
+#   这个分支走 ImmortalWrt openwrt-25.12 —— **固定稳定版、内核 6.12**，
+#   软件源和插件生态都是国内调校过的，换来的是可复现 + 稳。
 #
-# 锁定时间：2026-10-02
+# 代价：ImmortalWrt 25.12 **没有这块板子**，需要自己移植（见下）。
 # ============================================================================
 
-# ---- OpenWrt 官方主线（基线）----------------------------------------------
-OPENWRT_REPO=https://github.com/openwrt/openwrt.git
-OPENWRT_BRANCH=main
-OPENWRT_COMMIT=HEAD
+# ---- 基线：ImmortalWrt 25.12 ------------------------------------------------
+# 实测（2026-10-03）：filogic.mk 里 tenda_be12-pro 出现 **0 次**，
+# 190 个 filogic 设备。但 MT7987 SoC 本身是支持的（bpi-r4-lite /
+# mt7987a-rfb / routerich_be7200 等），所以缺的只是「这台机器的描述」。
+OPENWRT_REPO=https://github.com/immortalwrt/immortalwrt.git
+OPENWRT_BRANCH=openwrt-25.12
+# ⚠️ 25.12 是稳定发布，**必须锁到具体 SHA**。锁到分支名的话上游一打 tag
+#    你的构建内容就变了，故障无法复现。
+OPENWRT_COMMIT=313718c25f206cdeee399bdc6c002b7388c9a513
 
-# ---- 官方 feeds ------------------------------------------------------------
-# ⚠️ 硬性约束：OpenWrt 的 scripts/feeds 解析器用 (\w+) 匹配 feed 名，
-#    即 **只接受 [A-Za-z0-9_]**，任何连字符都会导致
-#    "Syntax error in feeds.conf, line N" 并以 exit 25 中止。
-#    下方所有 FEED_NAME_* 必须为下划线命名，gen-feeds.sh 会强制校验。
+# ---- feeds ------------------------------------------------------------------
+# ⚠️ ImmortalWrt 用自己的 luci / packages 分支（openwrt-25.12），
+#    **不能**混用 openwrt/luci master —— 那是给 SNAPSHOT 用的，API 不兼容。
+#    这也是 main 分支和本分支最大的差异之一。
+LUCI_REPO=https://github.com/immortalwrt/luci.git
+LUCI_BRANCH=openwrt-25.12
+LUCI_COMMIT=d6167ea0645cbd1327708d85f94824f42d0eb872
+
+PACKAGES_REPO=https://github.com/immortalwrt/packages.git
+PACKAGES_BRANCH=openwrt-25.12
+PACKAGES_COMMIT=84bd86384928955b568988ca0e09e2c78c75173d
+
+# ---- 板级移植（25.12 独有）------------------------------------------------
+# 三件套，从 openwrt/openwrt main 抄过来，合计约 410 行：
+#   1) patches/immortalwrt-25.12/mt7987a-tenda-be12-pro.dts   设备树 390 行
+#   2) patches/immortalwrt-25.12/board-port.mk 里的 Build/tenda-mkdualimageheader
+#      —— 原厂私有镜像头（"God1" 魔数 + gzip CRC），**没有它 bootloader 不认镜像**
+#   3) 同文件里的 Device/tenda_be12-pro —— 14 行板子定义
+# 由 scripts/apply-board-port.sh 在克隆源码后自动追加，幂等。
 #
-#    另注：base-files 不是独立 feed —— 它就在 openwrt 主仓内
-#    (package/base-files)，官方 feeds.conf.default 中亦无此项。
-#    早期版本误加为独立 feed 导致构建失败，已移除。
-
-LUCI_REPO=https://github.com/openwrt/luci.git
-LUCI_BRANCH=master
-LUCI_COMMIT=aa3d48836e90ae0706c8d8f9b46b8371e45cfe1f
-
-PACKAGES_REPO=https://github.com/openwrt/packages.git
-PACKAGES_BRANCH=master
-PACKAGES_COMMIT=88019052fa25d86bfed3106edb3ba3022d8611c1
-
-# ---- LuCI 主题（均非官方主线，需自行引入）---------------------------------
-# ⚠️ 这三个包**不走 feeds**，由 scripts/fetch-extra-packages.sh 直接 clone
-#    到 OpenWrt 的 package/ 目录。
+# ⚠️ 最大风险：ImmortalWrt 25.12 是 **内核 6.12**，主线是 6.18。
+#    DTS 用到的较新 binding（airoha,an8855-ext-surge、MT76 的 band@0/band@1
+#    节点写法）6.12 未必认。构建失败时先看 dtc 报的是哪个属性。
 #
-# 原因：OpenWrt 的 include/scan.mk 用
-#     find -L feeds/<名字> -mindepth 1 ... -name Makefile
-# 扫描包，`-mindepth 1` 排除了 feed 根目录。而这三个仓库的 Makefile
-# 恰好就在根目录（jerrykuku/luci-theme-argon、eamonxg/luci-theme-aurora
-# 都是单包仓库），于是：
-#     feeds install <名字>/<包名>  →  静默无输出、不报错、什么都不做
-#     .config 里没有该包的符号    →  kconfig 不报错，编译全绿
-#     固件里就是没有这个主题     →  事后翻 .config 才发现
-# Run #5 就是这么白跑了一轮。详见 scripts/fetch-extra-packages.sh 头注释。
+# ⚠️ 设备树作者是 X-Wrt 的 Developer X，板子 2026-03-09 之后才合入主线，
+#    24.10 和 25.12.0~.3 全部没有。等官方把板子收进 ImmortalWrt 下一个稳定版，
+#    就可以把整个 patches/ 目录删掉、改回直接选设备。
+
+# ---- LuCI 主题 --------------------------------------------------------------
+# 三个主题**都不走 feeds**，统一由 scripts/fetch-extra-packages.sh 挂到 package/。
+# 原因：include/scan.mk 用 find -L feeds/<名字> -mindepth 1 -name Makefile 扫描，
+# 而 jerrykuku/luci-theme-argon 和 eamonxg/luci-theme-aurora 的 Makefile 都在
+# 仓库根目录，-mindepth 1 把它们排除了 → feeds 永远索引不到，
+# 且**静默失败、不报错**：.config 里压根没有符号，编译一路绿灯，固件里没主题。
+# （Run #5 栽在这个坑上。详见 scripts/fetch-extra-packages.sh 头部注释。）
 #
-# PKG_NAME_* 即 clone 后的目录名，必须与仓库内的包名对得上。
+# 注：ImmortalWrt 自己的 luci feed 里其实有 luci-theme-argon 和
+# luci-theme-bootstrap（Makefile 在 themes/ 下，feeds 能扫到）。
+# 这里仍走 package/ 挂载，是为了和 main 分支保持同一套代码、少一处差异。
 PKG_NAME_THEME_ARGON=luci-theme-argon
 THEME_ARGON_REPO=https://github.com/jerrykuku/luci-theme-argon.git
 THEME_ARGON_BRANCH=master
 THEME_ARGON_COMMIT=23c3e525578374d6b20f5e7b93d27874cd01a252
 
-# argon 的配置界面（配色等），单独仓库
 PKG_NAME_ARGON_CFG=luci-app-argon-config
 ARGON_CFG_REPO=https://github.com/jerrykuku/luci-app-argon-config.git
 ARGON_CFG_BRANCH=master
 ARGON_CFG_COMMIT=3e099a37c3f71d0de677f1b6b0f4bffd57d91dac
 
+# aurora（eamonxg）是第三方，**ImmortalWrt feeds 里没有**，必须外部挂载。
+# ⚠️ 已知风险：锁的这个 commit 是给 **LuCI master**（SNAPSHOT）编的，
+#    25.12 是稳定版、LuCI API 可能有出入，aurora 未必渲染得出来。
+#    症状和坑 11 一样：主题装上了但界面花掉 / 下拉框空。
+#    届时要么回退到 argon，要么把这里换成兼容 25.12 的 commit。
 PKG_NAME_THEME_AURORA=luci-theme-aurora
 THEME_AURORA_REPO=https://github.com/eamonxg/luci-theme-aurora.git
 THEME_AURORA_BRANCH=master
 THEME_AURORA_COMMIT=84c27b66952e6fc4be60128067a6b88bfd34afb5
 
-
-# ---- 应用 -----------------------------------------------------------------
-# frpc：全部使用**官方**包，不再引入第三方 feed。
-#
-#   frpc         → openwrt/packages 官方（v0.71.0，Go 源码编译）
-#                   注意：需要 golang host 构建依赖，会显著拉长构建时间
-#   luci-app-frpc → openwrt/luci 官方 applications/luci-app-frpc
-#                   含 htdocs/po/root，是完整 LuCI 应用，
-#                   且其 LUCI_DEPENDS 已声明 "+frpc"
-#
-# 历史上曾用 kuoruan/luci-app-frpc（因为老的 luci-app-frp 仓库已 404），
-# 但那个仓库同样是根 Makefile 结构，走 feeds 装不进来。
-# Run #5 的日志证实 luci-app-frpc 实际来自官方 luci feed，功能不受影响，
-# 故直接移除第三方源，减少一个变量。
-# 锁定版本请看 LUCI_COMMIT / PACKAGES_COMMIT。
-
 # ============================================================================
-# 刻意 NOT 锁定的组件
-# ----------------------------------------------------------------------------
-# mwan3 —— 故意不进固件镜像。原因见 README §4.3：
+# ⛔ 刻意 NOT 锁定的组
+# ============================================================================
+# mwan3 —— 绝不进固件镜像。原因见 README §4.3：
 #   官方 mwan3 是 iptables 实现，在 fw4/nftables 上负载均衡已失效；
-#   且任何包含 mwan3 的 sysupgrade 都会静默装回失效版本。
+#   且任何含 mwan3 的 sysupgrade 都会静默装回 iptables 版本。
 #   改用 dl12345/mwan3 原生 nft 移植版，刷机后单独安装：
 #     https://github.com/dl12345/mwan3
 #     https://github.com/dl12345/luci-app-mwan3
 #
-# passwall —— 已按用户要求移除（体积：完整依赖 64MB 压缩 / 解压 >150MB，
-#   超出本机 60MB 可用 overlay）。如需恢复，见 README §4.6。
+# passwall —— 已按需求排除（完整依赖 64MB 压缩 / 解压 >150MB，
+#   超出本机 60MB 可用 overlay）。
 # ============================================================================

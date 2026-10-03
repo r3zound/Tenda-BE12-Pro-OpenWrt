@@ -94,6 +94,42 @@ jobs:
           ./scripts/gen-feeds.sh "$OPENWRT_SRC"
 
       # ---------------------------------------------------------------------
+      - name: 板级移植 ⚠️
+        run: |
+          # ⛔ immortalwrt-25.12 分支专属。ImmortalWrt 25.12 官方**没有**
+          #    Tenda BE12 Pro 这个板子（filogic.mk 里 0 次提及），
+          #    不做这步的话 make menuconfig 里选不到设备，
+          #    编译会一路绿灯但 bin/ 里根本没有固件。
+          #
+          # 补三件：设备树 DTS、Build/tenda-mkdualimageheader（原厂私有镜像头，
+          # 没有它 bootloader 不认镜像）、Device/tenda_be12-pro（板子定义）。
+          # 详见 patches/immortalwrt-25.12/board-port.mk 头部。
+          #
+          # 幂等，重复执行不会重复追加。
+          ./scripts/apply-board-port.sh "$OPENWRT_SRC"
+
+      # ---------------------------------------------------------------------
+      - name: 板级移植回读校验 ⚠️
+        run: |
+          # 拷文件/追加文本都可能「成功但没生效」，这里从 make 视角复验一次：
+          # 真正决定固件能不能出的，是 .config 里有没有这个设备的符号。
+          cd "$OPENWRT_SRC"
+          echo "--- filogic.mk 里的板级移植痕迹 ---"
+          grep -n 'TENDA-PORT\|tenda-mkdualimageheader\|define Device/tenda_be12-pro\|TARGET_DEVICES += tenda_be12-pro' \
+            target/linux/mediatek/image/filogic.mk | head -10
+          echo "--- DTS 是否在位 ---"
+          ls -l target/linux/mediatek/dts/mt7987a-tenda-be12-pro.dts
+          echo "--- 设备在 filogic 的 profile 列表里吗 ---"
+          grep -c '^TARGET_DEVICES' target/linux/mediatek/image/filogic.mk
+          # 真实判据：make 能不能枚举出这个设备
+          if grep -q 'define Device/tenda_be12-pro' target/linux/mediatek/image/filogic.mk; then
+            echo "✅ 设备定义已注入"
+          else
+            echo "::error::板级移植失败：filogic.mk 里没有 Device/tenda_be12-pro"
+            exit 1
+          fi
+
+      # ---------------------------------------------------------------------
       - name: 校验 feeds.conf 语法 ⚠️
         run: |
           # gen-feeds.sh 内部已做正则自检；这里再用 OpenWrt 真实解析器复验一次。
