@@ -91,7 +91,7 @@
 | **luci-theme-edge** | ❌ **已移除** | 唯一可用源 `zhucemax/openwrt-packages` 是含数百包的大杂烩（含 openclash/ssr-plus/xray-core），全量安装会撑爆 rootfs，且其自带的 2019 版 luci-theme-argon 与本仓库的 2.4.7 冲突 |
 | **mwan3** | ⚠️ **不打包进固件** | 官方 mwan3 是 iptables 实现，在 fw4/nftables 上负载均衡已失效；且含 mwan3 的 sysupgrade 会静默装回失效版本。改用 `dl12345/mwan3` 原生 nft 移植版，**刷机后手动安装** |
 | **frp** | ✅ 用官方包 | `frpc` 来自 openwrt/packages，`luci-app-frpc` 来自 openwrt/luci。第三方 `kuoruan/luci-app-frpc` 已移除 |
-| **argon / aurora** | ✅ 保留 | 由 `fetch-extra-packages.sh` 挂载 |
+| **argon / aurora** | ✅ 保留 | 由 `fetch-extra-packages.sh` 挂载。**aurora（eamonxg/luci-theme-aurora）是内置默认主题**，argon 是备选。主题注册机制见 **§5 坑 11**（写错会让主题下拉框完全空白） |
 
 ### 凭据处理
 
@@ -267,7 +267,7 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 
 ---
 
-## 5. ⚠️ 完整坑位清单（10 个，全部静默失败）
+## 5. ⚠️ 完整坑位清单（11 个，全部静默失败）
 
 **这九个坑的共同点：链路上没有任何一个环节会报错。**
 形态都是「编译成功 → CI 绿 → 守卫过 → 固件里东西是错的」。
@@ -407,6 +407,65 @@ uci set wireless.default_radio0.disabled='1'   # ← 看起来毫无问题
 另外 `uci get <包>.<段>`（不带选项名）返回的**就是段类型**，
 可以直接拿来当类型判据 —— 伪段会返回 `default_radio0` 而不是 `wifi-device`。
 
+### 坑 11：`uci set` 建不出段 → LuCI 主题下拉框完全空白
+
+**已造成真实故障**：用户在设备上打开 LuCI「系统 → 系统 → 设计」，
+主题下拉框里**一个主题都没有**，而 CI 全绿、系统一切正常。
+
+下拉框的数据源在 `/www/luci-static/resources/view/system/system.js`：
+
+```js
+const th = Object.keys(uci.get('luci','themes') || {}).sort();
+```
+
+**只认 `luci.themes` 段的选项**。段没了或空了，下拉框就是空的
+（注意 LuCI 其余部分完全正常 —— 主题渲染走 `luci.main.mediaurlbase`，
+和这个下拉框是两条独立路径，所以「界面正常但选不了主题」）。
+
+完整因果链：
+
+1. 三个主题包自带的 `/etc/uci-defaults/30_luci-theme-{argon,aurora,bootstrap}`
+   用 **`uci batch`** 把 `luci.themes` 注册好了。
+2. 我们的 `register_themes()` 运行在 `99-`（排在后面），
+   第一行 `uci -q delete luci.themes` **把上一步注册好的整个段删掉了**。
+3. 接着它想重建，用的是**命令行** `uci set luci.themes.$t=...`。
+   而 `uci set` 的 3 段式在**段不存在时不会自动建段**，
+   直接报 `uci: Invalid argument` 并返回 1。
+4. 每一条都失败，`uci commit` 提交了个空结果，
+   而 `register_themes()` **没有任何错误检查**，日志照样打「已注册」。
+
+同一条 `set` 语句的实测对照（uci 沙箱，同一份 `/etc/config/luci`）：
+
+| 写法 | 结果 |
+|------|------|
+| `uci set luci.themes.X=...` | ❌ rc=1 `uci: Invalid argument` |
+| `uci add luci themes` + `uci set` | ❌ 段建出来了，选项写不进去 |
+| `uci batch` 里 `set luci.themes=themes` + `set luci.themes.X=...` | ✅ rc=0 |
+| `uci batch` 里直接 3 段式 | ✅ rc=0 |
+
+**结论：只有 `uci batch`（以及 `uci add`）会顺带建段，命令行 `set` 不会。**
+
+修法里又踩了两个更细的坑（都已修）：
+
+- **不能把变量拼进 `<<-EOF`**。`<<-` 只剥 here-doc **文本里行首的 TAB**，
+  而 `$var` 后面紧跟的 TAB 是**展开后**才出现的，剥不掉，
+  结果第一行变成缩进行 → `uci: Parse error`。
+  改成**整段拼好再用管道送进 `uci batch`**。
+- **选项名不能带连字符**。`uci batch` 的 `set` 解析器不接受 `bootstrap-dark`
+  这种名字，会**静默丢弃该条**（实测 5 个主题只进去 3 个，丢的正好是两个
+  bootstrap-*）。所以用驼峰 `BootstrapDark` / `BootstrapLight` ——
+  这也正是官方 `30_luci-theme-bootstrap` 的写法。
+  显示名由 LuCI 直接取选项名（`Object.keys` 当 label），等价。
+
+> 已加入 `scripts/verify-firmware.sh`：不得出现 `uci set luci.themes.`、
+> 必须走 `uci batch`、默认主题必须是 aurora、选项名不得带连字符、
+> 必须有 `uci show` 回读校验、固件内必须有 aurora 的 `header.ut`。
+>
+> `register_themes()` 本身在实机跑了三个场景，全部通过：
+> **A** 从零开始（段不存在）→ 5 个主题 + aurora 为默认；
+> **B** 幂等重跑 → md5 完全一致；
+> **C** aurora 目录缺失 → 自动回退 argon（4 个），恢复后回到 5 个 + aurora。
+
 
 ### 两条最容易重犯的
 
@@ -529,7 +588,10 @@ ref 语法：分支用 `;`，commit 用 `^`。
 - [ ] WED / HNAT 硬件加速是否生效
 - [ ] 无线：9 天线通路（4T4R + 5T5R）是否全出
 - [ ] 1000M 软 NAT 吞吐（`iperf3`）
-- [ ] 三个主题是否都能在 LuCI 里正常切换
+- [ ] **LuCI 主题下拉框里能选到全部 5 个主题**（Aurora / Argon / Bootstrap / BootstrapDark / BootstrapLight）
+      判据：`uci show luci | grep '^luci\.themes\.'` 行数 >= 1，且
+      `uci get luci.main.mediaurlbase` = `/luci-static/aurora`
+      —— 见 **§5 坑 11**，这条曾经长期为空
 
 ### 7.3 可选优化（不是当前重点）
 
@@ -640,9 +702,19 @@ grep -cE "^[[:space:]]*option encryption 'none'" files/etc/config/wireless  # �
 grep -cE "^[[:space:]]*option country 'CN'" files/etc/config/wireless        # 期望 >=2
 grep -nE "^(WIFI_SSID|WIFI_KEY|WIFI_ENC)=" files/etc/uci-defaults/99-tenda-custom  # 期望 ASUS / abcd1234. / psk2
 grep -c "disabled='1'" files/etc/uci-defaults/99-tenda-custom                # 期望 0
-grep -rc "disable_wifi" files/etc/uci-defaults/99-tenda-custom               # 期望 0（已被 setup_wifi 取代）
+grep -cE "^[[:space:]]*disable_wifi[[:space:]]*$" files/etc/uci-defaults/99-tenda-custom  # 期望 0（只看调用行，注释提及不算）
 
-# 8. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
+# 8. LuCI 主题注册没被改坏（§5 坑 11）
+F=files/etc/uci-defaults/99-tenda-custom
+grep -nE "^LUCI_DEFAULT_THEME=" $F                               # 期望 LUCI_DEFAULT_THEME='aurora'
+grep -qE "^[[:space:]]*uci[[:space:]]+set[[:space:]]+luci\.themes\." $F \
+  && echo "❌ 用 uci set 写 luci.themes —— 建不出段，下拉框会是空的（坑 11）"
+grep -q "uci batch" $F || echo "❌ 主题注册没走 uci batch"
+grep -qE "set luci\.themes\.[A-Za-z0-9_]*-" $F \
+  && echo "❌ luci.themes 选项名带连字符，uci batch 会静默丢弃"
+grep -q 'template/themes/\$t' $F || echo "❌ 主题探测没查 LuCI 模板目录"
+
+# 9. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
 ./scripts/verify-firmware.sh <含 bin/targets/mediatek/filogic/ 的目录>
 ```
 
