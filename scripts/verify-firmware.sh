@@ -229,6 +229,26 @@ EOF
     bad_ "固件里没有 /usr/lib/tenda/install-mwan3.sh"
   fi
 
+  # ---- 无线预置守卫 ----
+  # 首次启动脚本负责下发 SSID / 密码 / 加密方式并启用两个 radio。
+  # 这里只做静态抽查：语句在不在、country 是不是 CN、radio 有没有被误关。
+  if grep -q "setup_wifi" "$R/etc/uci-defaults/99-tenda-custom" 2>/dev/null; then
+    ok_ "首启脚本含 setup_wifi"
+  else
+    bad_ "首启脚本里没有 setup_wifi —— 无线不会被预置"
+  fi
+  if grep -qE "^[[:space:]]*uci set wireless\.radio[01]\.country='CN'" \
+       "$R/etc/uci-defaults/99-tenda-custom" 2>/dev/null; then
+    ok_ "无线国家码预置为 CN（不设会按错误监管域工作）"
+  else
+    bad_ "无线 country 未预置为 CN —— 发射功率/DFS 行为会按错误法规走"
+  fi
+  if grep -qE "default_radio[01]\.disabled='1'" "$R/etc/uci-defaults/99-tenda-custom" 2>/dev/null; then
+    bad_ "首启脚本里还有把 radio 关掉的语句"
+  else
+    ok_ "首启脚本没有误关 radio"
+  fi
+
   # ---- 危险命令守卫 ----
   # AN8855AE 交换芯片下 /etc/init.d/network restart 会导致 LAN 失联、需断电，
   # 预置文件里绝不能把它当成操作指引告诉用户。

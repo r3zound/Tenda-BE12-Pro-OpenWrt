@@ -252,14 +252,66 @@ register_themes() {
 }
 
 # -----------------------------------------------------------------------------
-# 6. 无线默认关闭
-#    安全策略：首次启动不广播 SSID，用户配置后再启用
+# 6. 无线配置（预置 SSID / 密码 / 加密方式，并默认启用）
+#
+#    ⚠️⚠️⚠️ 安全警告，**请务必读完** ⚠️⚠️⚠️
+#    本仓库是**公开仓库**，下面这个 WiFi 密码会永久留在公开的 git 历史里。
+#    任何人都能通过 GitHub 搜到它，也就能连上你家 WiFi。
+#    这是明确知情的决定（用户 2026-10-03 确认：「直接写进仓库，我就知道会公开」）。
+#    与 §1 的 PPPoE 凭据策略不同 —— 那条不写是因为没必要，这条是用户要的。
+#    如果哪天不想公开了，改这一处 + 重新构建即可（但旧值仍留在历史里，
+#    彻底清除需要 rewrite history，请另做打算）。
+#
+#    两频段同名 SSID（ASUS）：客户端按信号强度自行选择 2.4G / 5G，
+#    效果等同于漫游，与用户原先 ImmortalWrt 上的用法一致。
+#
+#    country='CN'：必须设。国内用的是 CN 监管域，不设或设成别的域，
+#    5G 的发射功率上限和 DFS 行为都会按错误的法规走
+#    （曾出现过 country='AU' 导致 5G 跑到 23 dBm 的情况）。
 # -----------------------------------------------------------------------------
-disable_wifi() {
-	uci set wireless.default_radio0.disabled='1' 2>/dev/null
-	uci set wireless.default_radio1.disabled='1' 2>/dev/null
+WIFI_SSID='ASUS'
+WIFI_KEY='abcd1234.'
+WIFI_ENC='psk2'          # psk2 = WPA2-PSK (CCMP)；sae 会变成 WPA3
+
+setup_wifi() {
+	# ---- 射频：国家码 / 信道 / 带宽 ----------------------------------------
+	# 5G 用 36 信道 + 80MHz（避开 100-144 的 DFS 频段，国内无需等待）
+	uci set wireless.radio0.country='CN' 2>/dev/null
+	uci set wireless.radio0.channel='1' 2>/dev/null
+	uci set wireless.radio0.htmode='EHT20' 2>/dev/null
+	uci set wireless.radio0.disabled='0' 2>/dev/null
+
+	uci set wireless.radio1.country='CN' 2>/dev/null
+	uci set wireless.radio1.channel='36' 2>/dev/null
+	uci set wireless.radio1.htmode='EHT80' 2>/dev/null
+	uci set wireless.radio1.disabled='0' 2>/dev/null
+
+	# ---- 两个 wifi-iface：同名 SSID + WPA2-PSK -----------------------------
+	# 同名 SSID 时客户端按信号强度自行选频段，等效于漫游。
+	local r
+	for r in default_radio0 default_radio1; do
+		uci set wireless.$r.ssid="$WIFI_SSID" 2>/dev/null
+		uci set wireless.$r.encryption="$WIFI_ENC" 2>/dev/null
+		uci set wireless.$r.key="$WIFI_KEY" 2>/dev/null
+		uci set wireless.$r.disabled='0' 2>/dev/null
+	done
 	uci commit wireless 2>/dev/null
-	log "无线已默认关闭，请配置 SSID 后于 LuCI 中启用"
+
+	# ---- 生效 --------------------------------------------------------------
+	reload_config
+
+	# ---- 回读确认（4 项，缺一即告警）--------------------------------------
+	local ok=0
+	[ "$(uci -q get wireless.default_radio0.ssid)" = "$WIFI_SSID" ] && ok=$((ok+1))
+	[ "$(uci -q get wireless.default_radio1.ssid)" = "$WIFI_SSID" ] && ok=$((ok+1))
+	[ "$(uci -q get wireless.default_radio0.encryption)" = "$WIFI_ENC" ] && ok=$((ok+1))
+	[ "$(uci -q get wireless.default_radio1.disabled)" = "0" ] && ok=$((ok+1))
+	if [ "$ok" -eq 4 ]; then
+		log "无线已配置并启用：SSID=$WIFI_SSID 加密=WPA2-PSK（2.4G + 5G 同名）"
+	else
+		warn "无线配置只确认了 $ok/4 项，请进 LuCI 复核"
+	fi
+	warn "⚠ WiFi 密码是写在公开仓库里的默认值，建议尽快在 LuCI 里改成你自己的"
 }
 
 # -----------------------------------------------------------------------------
@@ -342,7 +394,7 @@ apply_base_config
 ensure_lan
 check_interfaces
 register_themes
-disable_wifi
+setup_wifi
 disable_frpc_autostart
 log_hardware
 try_install_mwan3

@@ -18,13 +18,23 @@
 | **仓库** | <https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt> |
 | **基线** | 官方 OpenWrt **mainline SNAPSHOT**，commit `3f26ab3d4d973fdbd3a1593a68e8186f5cc58dbd` |
 | **目标** | `mediatek/filogic` / `tenda_be12-pro`（MT7987A，512MB DDR4，128MB SPI-NAND） |
-| **当前状态** | ✅ 固件已构建并通过 24 项内容校验；⬜ **上机验证未开始**（唯一未完成项） |
+| **当前状态** | ✅ 固件已构建并通过 24 项内容校验；✅ **Run #15 已于 2026-10-03 刷入设备**，上机验证进行中 |
 | **最新成功 CI** | [Run #15](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37094280125) · [Run #14](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37038515704) |
 | **编译耗时** | 82 分钟（GitHub Actions） |
-| **CI 触发** | 手动 `workflow_dispatch` / 推 tag / 推 main / 每周定时 |
+| **CI 触发** | 手动 `workflow_dispatch` / 推 tag / 每周定时。**⛔ 推 main 不再触发构建**（2026-10-03 起，见下） |
 
 **一句话任务**：固件已经做好了，**接下来该做的是让用户刷上去并验证运行时**，
 而不是继续改构建体系。构建体系已经稳定（连续 2 次全绿）。
+
+> ### ⛔ 推 main 不再自动编译（2026-10-03 起）
+>
+> `on.push` 里的 `branches: [main]` **已删除**。现在只有
+> **手动 `workflow_dispatch`** / 打 `v*` tag / 每周一 cron 会构建。
+>
+> 原因：全量构建要 82~96 分钟，实测出现过纯文档提交
+> （`2dc401d` 只加了 AGENTS.md）白烧掉 96 分钟的情况。
+>
+> **改完代码先推 main，攒够一批再手动触发一次**。推 main 是安全的，不会自动开跑。
 
 ---
 
@@ -43,6 +53,27 @@
 - LAN = `eth1`（2.5G）+ `lan4` + `lan5`（1G），地址 `192.168.100.254/24`
 - DHCP 池 `.100–.199`
 - 预置简体中文 LuCI
+
+### 无线预置（2026-10-03 用户要求，已实现）
+
+刷完直接能连，不用进 LuCI 先配一遍：
+
+| 项 | 值 |
+|----|----|
+| SSID（2.4G + 5G **同名**） | `ASUS` |
+| 密码 | `abcd1234.` |
+| 加密 | `psk2` = **WPA2-PSK (CCMP)**。⚠️ 不是 `sae`，sae 会变成 WPA3 |
+| 默认状态 | **启用**（`disabled='0'`）—— 用户明确要「配完就能连」 |
+| country | `CN`（2.4G 信道 1 / EHT20，5G 信道 36 / EHT80） |
+
+- **同名 SSID 是有意的**：客户端按信号强度自行选频段，等效于漫游，
+  与用户原先 ImmortalWrt 上的用法一致。
+- **country='CN' 是正确性修复，不是偏好**：国内用 CN 监管域，
+  不设或设成别的域，5G 功率上限和 DFS 行为会按错误法规走
+  （旧 ImmortalWrt 上出现过 country='AU' 导致 5G 跑到 23 dBm）。
+- 这**推翻了**本文件早期「首次启动不广播 SSID」的安全策略。用户知情并选择可用性。
+- 实现在 `files/etc/uci-defaults/99-tenda-custom` 的 `setup_wifi()`，
+  提交前必须同步到 `package/tenda-preset/files/`（见 §11 双份同步铁律）。
 
 ### 插件取舍（已定，不要擅自改回）
 
@@ -72,6 +103,18 @@ config interface 'wan2'
 
 刷机后由用户在 LuCI 中手工填写。其余内容（仓库地址、commit SHA、IP、接口名等）
 **均无需脱敏**。
+
+> ### ⚠️ 例外：WiFi 密码是**故意**公开的，不要「修」回去
+>
+> `99-tenda-custom` 里的 `WIFI_KEY='abcd1234.'` **明文写在公开仓库里**。
+> 这是**用户知情后明确决定**的（2026-10-03：「直接写进仓库，我就知道会公开」），
+> 并被反复重申。理由是他要的是「刷完直接能连」。
+>
+> - 这和上面「PPPoE 凭据不进仓库」**不矛盾**：PPPoE 不写是因为没必要，
+>   WiFi 写是因为用户要。
+> - 已在源码里加了显著警告注释，首启时也会 `warn` 提醒用户尽快改密码。
+> - **后续 agent 看到明文密码不要当成泄露漏洞擅自改掉**，
+>   要改先问用户。想彻底清除需要 rewrite history，另做打算。
 
 ---
 
@@ -458,6 +501,7 @@ ref 语法：分支用 `;`，commit 用 `^`。
 - GitHub token 存在加密 secret `GITHUB_TOKEN`，推送用一次性 `GIT_ASKPASS`
 - ⚠️ 用户提供的 token 权限极高，**项目完成后建议撤销并换最小权限 token**
 - 除 PPPoE 凭据外，仓库地址、commit SHA、IP、接口名等**均无需脱敏**
+- WiFi 默认密码是**例外，明文公开**（用户知情决定，见 §1，不要擅自改回）
 
 ---
 
@@ -507,9 +551,21 @@ grep -rn "/etc/init.d/network restart" files/ package/ && echo "❌ 见上面"
 grep -nE "^\s*set\s+dhcp\.lan=" files/etc/uci-defaults/99-tenda-custom
 #    期望只有一行，且是  set dhcp.lan='dhcp'
 
-# 7. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
+# 7. 无线预置没被改坏（§1 无线预置表）
+grep -nE "^(WIFI_SSID|WIFI_KEY|WIFI_ENC)=" files/etc/uci-defaults/99-tenda-custom
+#    期望 ASUS / abcd1234. / psk2
+grep -c "^	uci set wireless.radio[01].country='CN'" files/etc/uci-defaults/99-tenda-custom  # 期望 2
+grep -c "uci set wireless" files/etc/uci-defaults/99-tenda-custom                            # disabled='0' 等，期望 >=8
+grep -c "disabled='1'" files/etc/uci-defaults/99-tenda-custom                                # 期望 0
+grep -rc "disable_wifi" files/etc/uci-defaults/99-tenda-custom                               # 期望 0（已被 setup_wifi 取代）
+
+# 8. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
 ./scripts/verify-firmware.sh <含 bin/targets/mediatek/filogic/ 的目录>
 ```
+
+> 第 4 条的裸凭据 grep **只查 `password=`**，查不到 `WIFI_KEY=`。
+> 这是有意的：WiFi 密码按用户决定公开（§1 凭据处理），
+> **不要**把 `WIFI_KEY` 加进这条 grep 的黑名单。
 
 **提交前最容易犯的错**（都栽过）：
 
