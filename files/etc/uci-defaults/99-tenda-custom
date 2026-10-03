@@ -222,33 +222,114 @@ check_interfaces() {
 # -----------------------------------------------------------------------------
 # 5. LuCI 主题注册
 #    把已安装的主题注册到 /etc/config/luci，确保下拉框里能选到
+#
+#    LuCI 主题下拉框在「系统 → 系统 → 设计」，数据源是
+#    /www/luci-static/resources/view/system/system.js:
+#        const th = Object.keys(uci.get('luci','themes') || {}).sort();
+#    也就是**只认 luci.themes 段的选项**。段没了/空了，下拉框就是空的。
+#
+#    ⚠️⚠️ 踩过的坑（坑 11）⚠️⚠️
+#    旧版这里写的是：
+#        uci -q delete luci.themes
+#        uci set luci.themes.$t="/luci-static/$t"     ← 3 段式
+#    三个主题包自带的 /etc/uci-defaults/30_luci-theme-* 用 **uci batch**
+#    已经把 luci.themes 注册好了，本函数第一行**把它整个删掉**，
+#    然后试图用 `uci set` 命令行重建 ——
+#    而 `uci set` 的 3 段式在**段不存在时不会自动建段**，
+#    会直接报 `uci: Invalid argument` 并返回 1。
+#    结果：每一条都失败，uci commit 提交了个空结果，
+#    而本函数**没有任何错误检查**，日志照样打「已注册」。
+#    表象就是「主题下拉框里无任何主题」，但 CI 全绿、系统一切正常。
+#
+#    实测对照（同一份 /etc/config/luci，uci 沙箱里跑）：
+#        uci set  luci.themes.X=...            → rc=1  uci: Invalid argument
+#        uci add luci themes + uci set          → 段建出来了，选项写不进
+#        uci batch 里 set luci.themes=themes
+#                 + set luci.themes.X=...      → rc=0  ✅
+#        uci batch 里直接 3 段式               → rc=0  ✅
+#    结论：**只有 batch（以及 uci add）会顺带建段，命令行 set 不会。**
 # -----------------------------------------------------------------------------
+
+# 默认主题。用户 2026-10-03 明确要求：eamonxg/luci-theme-aurora 内置且作默认。
+# 它已经由 versions.lock 的 THEME_AURORA_* 从
+# https://github.com/eamonxg/luci-theme-aurora.git 打进固件了
+# （scripts/fetch-extra-packages.sh 直接 clone 到 package/），
+# 这里要做的是把它**注册进下拉框**并**设为默认**。
+LUCI_DEFAULT_THEME='aurora'
+
 register_themes() {
-	local themes="bootstrap"
-	local t
+	local lines="" t key n def
 
-	for t in /usr/share/luci/menu.d/luci-theme-*; do
-		[ -e "$t" ] || continue
+	# 探测真正可用的主题：静态资源目录 + LuCI 模板目录，**两个都要在**。
+	# 少任何一个 LuCI 都会回退到 bootstrap（runtime.uc 的 media_error 分支）。
+	#
+	# ⚠️ 选项名用**驼峰、不带连字符**（BootstrapDark 而不是 bootstrap-dark）：
+	#    uci batch 的 `set` 解析器不接受选项名里的 `-`，会静默丢弃该条
+	#    （实测：5 个主题只进去 3 个，丢的正好是两个 bootstrap-*）。
+	#    这也是官方 30_luci-theme-bootstrap 用 BootstrapDark/BootstrapLight 的原因。
+	#    显示名由 LuCI 从选项名直接取（system.js 用 Object.keys 当 label），
+	#    所以驼峰名显示为 BootstrapDark，功能上完全等价。
+	for t in aurora argon bootstrap bootstrap-dark bootstrap-light; do
+		[ -d "/www/luci-static/$t" ] || continue
+		[ -d "/usr/share/ucode/luci/template/themes/$t" ] || continue
+		case "$t" in
+			aurora)          key=Aurora ;;
+			argon)           key=Argon ;;
+			bootstrap)       key=Bootstrap ;;
+			bootstrap-dark)  key=BootstrapDark ;;
+			bootstrap-light) key=BootstrapLight ;;
+			*)               key="$t" ;;
+		esac
+		lines="${lines}set luci.themes.${key}='/luci-static/${t}'
+"
 	done
 
-	# 探测实际存在的主题目录
-	for t in argon aurora edge bootstrap; do
-		if [ -d "/www/luci-static/$t" ]; then
-			themes="$themes $t"
-		fi
-	done
-
-	uci -q delete luci.themes 2>/dev/null
-	for t in $themes; do
-		uci set luci.themes.$t="/luci-static/$t"
-	done
-
-	# 默认主题：bootstrap 最稳，argon 次之
-	if [ -d /www/luci-static/bootstrap ]; then
-		uci set luci.main.mediaurlbase='/luci-static/bootstrap'
+	if [ -z "$lines" ]; then
+		warn "一个 LuCI 主题都没找到，主题下拉框会是空的"
+		return
 	fi
-	uci commit luci
-	log "已注册 LuCI 主题:$themes（默认 bootstrap）"
+
+	# 默认主题回退：aurora 不在就退 argon，再退 bootstrap
+	def="$LUCI_DEFAULT_THEME"
+	[ -d "/www/luci-static/$def" ] || def=argon
+	[ -d "/www/luci-static/$def" ] || def=bootstrap
+
+	# ⚠️ 关键：必须用 batch。batch 里 delete 后可以立刻 set 同名段重建，
+	#    命令行 uci set 做不到（见上面的坑 11 说明）。
+	#    delete 只在段已存在时才加，避免首启时刷一串 "Entry not found"。
+	#
+	# ⚠️ 整段用管道送进去，**不要用 <<-EOF 夹变量**：
+	#    `<<-` 只剥「here-doc 文本里行首的 TAB」，
+	#    而 `$var` 后面紧跟的 TAB 是在展开后才出现的，剥不掉，
+	#    结果第一行变成缩进行 → uci: Parse error（踩过）。
+	local del=""
+	uci -q get luci.themes >/dev/null 2>&1 && del="delete luci.themes
+"
+
+	# 管道出口码就是 uci batch 的退出码，可以直接判成败
+	{
+		printf '%s' "$del"
+		echo "set luci.themes=themes"
+		printf '%s' "$lines"
+		echo "set luci.main.mediaurlbase='/luci-static/${def}'"
+		echo "commit luci"
+	} | uci batch || {
+		warn "uci batch 失败，LuCI 主题下拉框会是空的"
+		return
+	}
+
+	# ---- 回读校验（坑 9 / 10 / 11 共同的教训：赋值成功 ≠ 生效）--------
+	n="$(uci -q show luci 2>/dev/null | grep -c '^luci\.themes\.')"
+	if [ "${n:-0}" -ge 1 ]; then
+		log "已注册 LuCI 主题 $n 个（$(uci -q show luci 2>/dev/null | grep '^luci\.themes\.' | cut -d. -f3 | sed 's/=.*//' | tr '\n' ' ')），默认 $def"
+	else
+		warn "luci.themes 回读为 0 项 —— 主题下拉框会是空的，请进 LuCI 手工检查"
+	fi
+	if [ "$(uci -q get luci.main.mediaurlbase)" = "/luci-static/$def" ]; then
+		log "默认主题已设为 $def"
+	else
+		warn "默认主题设置失败，当前为 $(uci -q get luci.main.mediaurlbase 2>/dev/null)"
+	fi
 }
 
 # -----------------------------------------------------------------------------
