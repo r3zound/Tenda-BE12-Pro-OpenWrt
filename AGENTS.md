@@ -71,9 +71,17 @@
 - **country='CN' 是正确性修复，不是偏好**：国内用 CN 监管域，
   不设或设成别的域，5G 功率上限和 DFS 行为会按错误法规走
   （旧 ImmortalWrt 上出现过 country='AU' 导致 5G 跑到 23 dBm）。
-- 这**推翻了**本文件早期「首次启动不广播 SSID」的安全策略。用户知情并选择可用性。
-- 实现在 `files/etc/uci-defaults/99-tenda-custom` 的 `setup_wifi()`，
-  提交前必须同步到 `package/tenda-preset/files/`（见 §11 双份同步铁律）。
+- **⛔ 配置必须预置在 `files/etc/config/wireless`，不能只靠首启脚本**。
+  该文件默认不在固件里（由 `/sbin/wifi config` 运行时生成），
+  只靠 `uci set` 会造出错误类型的伪段并被生成器洗掉 ——
+  旧版 `disable_wifi()` 就这么静默失效，设备以**无密码开放网络 `OpenWrt`** 上线。
+  完整机制见 **§5 坑 10**。
+- 实现分两层：
+  - `files/etc/config/wireless` —— 预置完整配置（带正确段类型和 `option path`，
+    生成器见此跳过），**这是真正起决定作用的一层**
+  - `files/etc/uci-defaults/99-tenda-custom` 的 `setup_wifi()` —— 幂等兜底 +
+    自愈（配置缺失时先调 `/sbin/wifi config`）+ 段类型复核 + 6 项回读
+- 改完必须同步到 `package/tenda-preset/files/`（见 §11 双份同步铁律）。
 
 ### 插件取舍（已定，不要擅自改回）
 
@@ -259,7 +267,7 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 
 ---
 
-## 5. ⚠️ 完整坑位清单（9 个，全部静默失败）
+## 5. ⚠️ 完整坑位清单（10 个，全部静默失败）
 
 **这九个坑的共同点：链路上没有任何一个环节会报错。**
 形态都是「编译成功 → CI 绿 → 守卫过 → 固件里东西是错的」。
@@ -328,6 +336,76 @@ grep -c "^config dhcp " <(uci export dhcp)   # 必须是 2
 > 检测 `set dhcp.lan=` 被写成 `dnsmasq`/`interface` 直接判失败。
 > 另加一道守卫：预置文件里出现 `/etc/init.d/network restart` 也判失败
 > （本机用它会 LAN 失联，见 §8）。
+
+### 坑 10：无线配置不在固件里 → `uci set` 造伪段 → 静默零效果
+
+**这个坑已经造成过真实事故**，而且是**安全方向的事故**。
+
+`/etc/config/wireless` **默认不在固件 rootfs 里**。它是运行时生成的：
+
+```sh
+/sbin/wifi config     # → ucode /usr/share/hostap/wifi-detect.uc
+                     # → ucode /lib/wifi/mac80211.uc | uci -q batch
+```
+
+源数据是 `/etc/board.json`。生成器里有个 `radio_exists(path, macaddr, phy, radio)`
+—— 只有当某个频段**还没有**对应的 `config wifi-device` 段时，它才会生成。
+
+于是有两条独立的失效路径：
+
+**① 段类型错（最隐蔽）**
+在 wireless 配置还不存在时执行
+
+```sh
+uci set wireless.default_radio0.disabled='1'   # ← 看起来毫无问题
+```
+
+`uci set` 在段不存在时会**新建一个类型叫 `default_radio0` 的段**，
+而不是 `wifi-iface`。commit 成功、`uci get` 回读也「有值」，
+但 `netifd` 完全不认 —— **执行成功、实际零效果**。
+这和坑 9 是同一个病根（`set <包>.<段>=<值>` 是赋类型，不是赋选项值）。
+
+**② 被生成器洗掉**
+即使段类型对了，生成器如果认为该频段「不存在」，会整个重写文件，
+首启脚本的修改全部消失。
+
+**实际发生的事**：`disable_wifi()` 两条语句全部无效，Run #15 刷完后
+设备以 **`ssid 'OpenWrt'` + `encryption 'none'` 的无密码开放网络**上线。
+`uci get wireless.default_radio0.disabled` 返回空 —— 伪段连 option 都没留下。
+
+**修法**（已实施）：
+
+1. `files/etc/config/wireless` 里**预置完整配置**，带正确类型的
+   `config wifi-device 'radio0'/'radio1'` + `option path`
+   → `radio_exists()` 匹配得上，生成器跳过，不再覆盖。
+   实机已验证：带着该文件跑 `/sbin/wifi config`，ASUS/psk2/CN 不被改动。
+2. `setup_wifi()` 开头自愈：文件缺失**或段类型不对**时，
+   **先把坏文件移走**再调 `/sbin/wifi config`，走「从零生成」这条可靠路径。
+   - ⚠️ 不能只让生成器往已有文件里补：`radio_exists()` 按 `option radio` 索引
+     和 `option path` 匹配，而**本机两个频段共用同一条 PCIe path**
+     （`soc/11280000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0`），
+     它可能认为「已经有 wifi-device 占了」而跳过该补的那段，留下半残配置。
+     实测踩过：直接补 → 配置被清成空；先移走再生成 → 一次就恢复正确。
+   - 移走后**再验一次**段类型，不对就 loud warn（备份留在 `/tmp/wireless.broken.*`）。
+3. `setup_wifi()` 加**段类型复核**：`uci export wireless | grep '^config'`
+   出现非 `wifi-device`/`wifi-iface` 的段就告警。
+4. 回读从 4 项加到 6 项（两频段 SSID + 两频段加密 + country + disabled）。
+   - 写这 6 项时踩过一次自己的坑：`country` 在 **`radio`** 上
+     （`wireless.radio0.country`），不在 `wifi-iface` 上。
+     取成 `wireless.default_radio0.country` 会**永远差 1 分**（5/6），
+     看起来像配置有问题，其实是回读项自己写错了。
+
+> 已加入 `scripts/verify-firmware.sh`：6 组正反用例全部验证过
+> —— 缺文件 / 伪段 / `encryption 'none'` / 缺 `option path` / SSID 写错 /
+> 加密写成 `sae`（WPA3），每种都能被抓出来。
+>
+> `setup_wifi()` 本身也在实机上跑过 T1/T2/T3 三个场景：
+> 配置完好（守卫不误触发）/ 伪段（自愈）/ 文件缺失（自愈），全部通过。
+
+**通用教训**：`uci get` 回读到值**不等于**配置生效。
+判断段类型只有一个可靠办法：`uci export <包> | grep '^config'`。
+另外 `uci get <包>.<段>`（不带选项名）返回的**就是段类型**，
+可以直接拿来当类型判据 —— 伪段会返回 `default_radio0` 而不是 `wifi-device`。
 
 
 ### 两条最容易重犯的
@@ -551,13 +629,18 @@ grep -rn "/etc/init.d/network restart" files/ package/ && echo "❌ 见上面"
 grep -nE "^\s*set\s+dhcp\.lan=" files/etc/uci-defaults/99-tenda-custom
 #    期望只有一行，且是  set dhcp.lan='dhcp'
 
-# 7. 无线预置没被改坏（§1 无线预置表）
-grep -nE "^(WIFI_SSID|WIFI_KEY|WIFI_ENC)=" files/etc/uci-defaults/99-tenda-custom
-#    期望 ASUS / abcd1234. / psk2
-grep -c "^	uci set wireless.radio[01].country='CN'" files/etc/uci-defaults/99-tenda-custom  # 期望 2
-grep -c "uci set wireless" files/etc/uci-defaults/99-tenda-custom                            # disabled='0' 等，期望 >=8
-grep -c "disabled='1'" files/etc/uci-defaults/99-tenda-custom                                # 期望 0
-grep -rc "disable_wifi" files/etc/uci-defaults/99-tenda-custom                               # 期望 0（已被 setup_wifi 取代）
+# 7. 无线预置没被改坏（§1 无线预置表、§5 坑 10）
+[ -f files/etc/config/wireless ] || { echo "❌ 缺 files/etc/config/wireless（坑 10）"; }
+grep -cE "^config wifi-device '?radio[01]'?" files/etc/config/wireless      # 期望 2
+grep -cE "^[[:space:]]*option path " files/etc/config/wireless               # 期望 >=1（radio_exists 要靠它）
+grep -cE "^[[:space:]]*config (wifi-device|wifi-iface) " files/etc/config/wireless  # 期望 = 段总数（不能有伪段）
+grep -cE "^[[:space:]]*option ssid 'ASUS'" files/etc/config/wireless         # 期望 2
+grep -cE "^[[:space:]]*option encryption 'psk2'" files/etc/config/wireless  # 期望 2
+grep -cE "^[[:space:]]*option encryption 'none'" files/etc/config/wireless  # 期望 0（开放网络）
+grep -cE "^[[:space:]]*option country 'CN'" files/etc/config/wireless        # 期望 >=2
+grep -nE "^(WIFI_SSID|WIFI_KEY|WIFI_ENC)=" files/etc/uci-defaults/99-tenda-custom  # 期望 ASUS / abcd1234. / psk2
+grep -c "disabled='1'" files/etc/uci-defaults/99-tenda-custom                # 期望 0
+grep -rc "disable_wifi" files/etc/uci-defaults/99-tenda-custom               # 期望 0（已被 setup_wifi 取代）
 
 # 8. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
 ./scripts/verify-firmware.sh <含 bin/targets/mediatek/filogic/ 的目录>
