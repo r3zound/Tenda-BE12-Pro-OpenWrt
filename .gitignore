@@ -31,3 +31,13 @@ secrets/
 node_modules/
 package-lock.json
 package.json
+
+# ==== 自建 apk 源：绝不能提交的密钥 ====
+# 私钥只放 GitHub Actions secrets，注入到 openwrt/private-key.pem
+*.pem
+# ⚠️ 但**公钥必须提交**（设备靠它信任自建源，这是整个方案的安全锚点）。
+#    上一行 *.pem 会把公钥一起挡掉，所以这里显式放行。
+!public-key.pem
+!**/public-key.pem
+!.repo-keys-in-repo/
+apk-repo/

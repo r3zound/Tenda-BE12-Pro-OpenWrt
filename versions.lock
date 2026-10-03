@@ -84,6 +84,42 @@ THEME_AURORA_BRANCH=master
 THEME_AURORA_COMMIT=84c27b66952e6fc4be60128067a6b88bfd34afb5
 
 # ============================================================================
+# 自建 apk 源：代理面板
+# -----------------------------------------------------------------------------
+# 为什么需要自建源（这是整个项目最硬的理由）：
+#   内核模块的 vermagic 绑死内核版本。SNAPSHOT 固件内核号天天变，
+#   任何外部源给的 kmod 都是「上一版内核编的」，装上去必然失败。
+#   实测别人的源给的是 kmod-nft-tproxy-6.18.52-r1，本机固件是 6.18.54。
+#   自己用同一个 build root 编，ABI 天然 100% 匹配。
+#
+# 这些面板**不走 feeds**，全部由 scripts/fetch-proxy-packages.sh 挂到 package/。
+# 原因：Makefile 都在仓库根目录，而 include/scan.mk 用
+#   find -L feeds/<名字> -mindepth 1 -name Makefile 扫描，-mindepth 1 把根目录
+#   排除了 → feeds 静默索引不到 → .config 里没有符号 → 编译全绿但固件里没面板。
+#   本项目坑 1 和坑 5 都栽在同一个机制上。
+#
+# 格式：REPO_PROXY_<名字>=<package/ 下的目录名>|<git 地址>|<分支>
+#   用竖线分隔：URL 里有斜杠但没有竖线。
+#
+# ⚠️ 单个仓库改名/删分支不会中断固件构建（脚本有意容错），
+#    但会让对应面板从源里消失。每周构建的预编译阶段会打印失败清单。
+# ============================================================================
+
+REPO_PROXY_PASSWALL=openwrt-passwall|https://github.com/Openwrt-Passwall/openwrt-passwall.git|main
+REPO_PROXY_PASSWALL2=openwrt-passwall2|https://github.com/Openwrt-Passwall/openwrt-passwall2.git|main
+REPO_PROXY_SSRPLUS=luci-app-ssr-plus|https://github.com/coolsnowwolf/luci.git|master
+REPO_PROXY_HOMEPROXY=homeproxy|https://github.com/immortalwrt/homeproxy.git|master
+REPO_PROXY_NIKKIRS=OpenWrt-nikki-rs|https://github.com/CHKayanami/OpenWrt-nikki-rs.git|main
+REPO_PROXY_CLASHRS=clash-rs|https://github.com/CHKayanami/clash-rs.git|master
+REPO_PROXY_OPENCLASH=luci-app-openclash|https://github.com/vernesong/OpenClash.git|master
+REPO_PROXY_MOSDNS=luci-app-mosdns|https://github.com/sbwml/luci-app-mosdns.git|v5
+REPO_PROXY_MOMO=luci-app-momo|https://github.com/nikkinikki-org/OpenWrt-momo.git|main
+REPO_PROXY_NEKOBOX=luci-app-nekobox|https://github.com/Thaolga/openwrt-nekobox.git|main
+REPO_PROXY_HIJPASS=luci-app-hijpass|https://github.com/WROIATE/luci-app-hijpass.git|main
+REPO_PROXY_XRAY=luci-app-xray|https://github.com/yichya/luci-app-xray.git|master
+REPO_PROXY_FCHOMO=openwrt-fchomo|https://github.com/fcshark-org/openwrt-fchomo.git|master
+
+# ============================================================================
 # ⛔ 刻意 NOT 锁定的组
 # ============================================================================
 # mwan3 —— 绝不进固件镜像。原因见 README §4.3：
