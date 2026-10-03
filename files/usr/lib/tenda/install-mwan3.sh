@@ -109,35 +109,82 @@ install() {
 
 	ok "架构: $FULL_ARCH"
 
-	# 查询最新 release
+	# ---------------------------------------------------------------------------
+	# 下载地址**不再用字符串拼**，改成读 release 的 assets 列表按名挑。
+	#
+	# ⚠️ 为什么（这个坑踩过）：原先按 "${ver}-1_openwrt-${VER}_${ARCH}.apk" 拼，
+	#    实测返回 **HTTP 404** —— release tag 是 v3.6.12-1，末尾那个 `-1` 是
+	#    发布序号，已经含在包版本里了，脚本又多拼了一个。
+	#    而且两个仓库的命名规则还不一样：
+	#      mwan3 → mwan3-3.6.12-1_openwrt-25.12_aarch64_cortex-a53.apk  （带 -1）
+	#      luci  → luci-app-mwan3_26.999.3.6.12.apk                      （不带 -1）
+	#    靠字符串推导，上游下次改名又会坏。直接读 assets 列表一劳永逸。
+	# ---------------------------------------------------------------------------
+	fetch_release() {
+		# ⚠️ OpenWrt 的 wget 是 uclient-fetch 的软链，**只认 -O（大写）**，
+		#    没有 -o（小写）选项，写了小写会直接报 "unrecognized option: o" 并
+		#    什么都不下载 —— 看起来像"GitHub 不通"，其实是参数写错了。
+		wget -q -O "$RELTMP" "https://api.github.com/repos/$1/releases/latest" 2>/dev/null || return 1
+		[ -s "$RELTMP" ]
+	}
+
+	# $1=json 文件  $2=asset 名的 shell glob → 打印 browser_download_url
+	pick_asset() {
+		local f="$1" pat="$2" i=0 idx="" n
+		for n in $(jsonfilter -e '@.assets[*].name' -i "$f" 2>/dev/null); do
+			# shellcheck disable=SC2254
+			case "$n" in $pat) idx=$i; break ;; esac
+			i=$((i+1))
+		done
+		[ -n "$idx" ] || return 1
+		jsonfilter -e "@.assets[$idx].browser_download_url" -i "$f" 2>/dev/null
+	}
+
+	RELTMP="/tmp/.mwan3-rel-$$.json"
+	trap 'rm -f "$RELTMP"' EXIT
+
+	command -v jsonfilter >/dev/null 2>&1 \
+		|| die "未找到 jsonfilter（base-files 提供），无法解析 release 资源列表"
+
 	echo "▸ 查询 $MWAN_REPO 最新版本…"
-	local tag
-	tag="$(wget -qO- "https://api.github.com/repos/$MWAN_REPO/releases/latest" 2>/dev/null \
-		| grep -oE '"tag_name": *"[^"]+"' | head -1 | sed 's/.*"\(v[^"]*\)"/\1/')"
-	[ -n "$tag" ] || die "无法获取最新版本号（网络问题？）"
+	fetch_release "$MWAN_REPO" || die "无法获取 $MWAN_REPO 的 release（GitHub 不通？）"
+	local tag mwan_url
+	tag="$(jsonfilter -e '@.tag_name' -i "$RELTMP" 2>/dev/null)"
+	[ -n "$tag" ] || die "解析 $MWAN_REPO 的 tag_name 失败"
 	ok "最新版本: $tag"
 
-	# 下载
-	local ver="${tag#v}"
-	local ver_luci="$ver"
-	local mwan_url="https://github.com/$MWAN_REPO/releases/download/${tag}/mwan3-${ver}-1_openwrt-${OPENWRT_VER}_${FULL_ARCH}.apk"
+	mwan_url="$(pick_asset "$RELTMP" "mwan3-*_${FULL_ARCH}.apk")" \
+		|| mwan_url=""
+	if [ -z "$mwan_url" ]; then
+		warn "在 $MWAN_REPO $tag 里没找到 ${FULL_ARCH} 的包。可用资源："
+		jsonfilter -e '@.assets[*].name' -i "$RELTMP" 2>/dev/null | sed 's/^/    /'
+		die "无法继续"
+	fi
 
 	cd /tmp || die "无法进入 /tmp"
 	echo "▸ 下载 mwan3…"
-	wget -q --show-progress -O mwan3.apk "$mwan_url" \
+	echo "  ${mwan_url##*/}"
+	wget -q -O mwan3.apk "$mwan_url" \
 		|| die "下载失败: $mwan_url"
 
 	# LuCI 界面（架构无关）
-	local luci_tag luci_url
-	luci_tag="$(wget -qO- "https://api.github.com/repos/$LUCI_REPO/releases/latest" 2>/dev/null \
-		| grep -oE '"tag_name": *"[^"]+"' | head -1 | sed 's/.*"\(v[^"]*\)"/\1/')"
-	if [ -n "$luci_tag" ]; then
-		local luci_ver="${luci_tag#v}"
-		luci_url="https://github.com/$LUCI_REPO/releases/download/${luci_tag}/luci-app-mwan3_26.999.${luci_ver}.apk"
+	local luci_tag luci_url=""
+	if fetch_release "$LUCI_REPO"; then
+		luci_tag="$(jsonfilter -e '@.tag_name' -i "$RELTMP" 2>/dev/null)"
+		luci_url="$(pick_asset "$RELTMP" 'luci-app-mwan3*.apk')" || luci_url=""
+	fi
+	if [ -n "$luci_url" ]; then
 		echo "▸ 下载 LuCI 界面…"
-		wget -q --show-progress -O luci-app-mwan3.apk "$luci_url" \
-			&& echo "  LuCI 包版本: ${luci_ver}" \
-			|| warn "LuCI 包下载失败，将只安装核心（可用 SSH 配置）"
+		echo "  ${luci_url##*/}"
+		if wget -q -O luci-app-mwan3.apk "$luci_url"; then
+			:
+		else
+			rm -f luci-app-mwan3.apk; luci_url=""
+			warn "LuCI 包下载失败，将只安装核心（可用 SSH 配置）"
+		fi
+	else
+		luci_url=""
+		warn "未在 $LUCI_REPO 找到 LuCI 包，将只安装核心（可用 SSH 配置）"
 	fi
 
 	# 安装（包未签名，需 --allow-untrusted）

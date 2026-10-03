@@ -207,6 +207,26 @@ DHCP 池数量 100|set dhcp.lan.limit='100'
     bad_ "找不到 set dhcp.lan='dhcp' —— 段类型是否正确无法判定，请人工确认"
   fi
 
+  # ---- mwan3 安装器守卫 ----
+  # 两个坑都是「脚本能跑、没有任何报错、但永远装不上」：
+  #   ① 用字符串拼下载地址 → 实测 HTTP 404（tag 的 -1 被重复拼了一次）
+  #   ② 用了 uclient-fetch 不支持的 wget 参数（-o / --show-progress）→ 下载直接失败
+  MW3="$R/usr/lib/tenda/install-mwan3.sh"
+  if [ -f "$MW3" ]; then
+    if grep -qE 'wget[^|]*(-o |--show-progress)' "$MW3"; then
+      bad_ "install-mwan3.sh 用了 uclient-fetch 不支持的 wget 参数（-o / --show-progress）—— 下载必然失败"
+    else
+      ok_ "install-mwan3.sh 的 wget 参数兼容 uclient-fetch"
+    fi
+    if grep -q 'mwan3-\${ver}' "$MW3"; then
+      bad_ "install-mwan3.sh 仍在用字符串拼 mwan3 下载地址（实测 404）"
+    else
+      ok_ "install-mwan3.sh 从 release assets 列表挑下载地址"
+    fi
+  else
+    bad_ "固件里没有 /usr/lib/tenda/install-mwan3.sh"
+  fi
+
   # ---- 危险命令守卫 ----
   # AN8855AE 交换芯片下 /etc/init.d/network restart 会导致 LAN 失联、需断电，
   # 预置文件里绝不能把它当成操作指引告诉用户。

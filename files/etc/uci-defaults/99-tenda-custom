@@ -19,21 +19,38 @@ warn() { logger -t "$LOG_TAG" -p user.warn "$*"; echo "! $*"; }
 
 # -----------------------------------------------------------------------------
 # 1. 软件源切换到国内镜像
-#    OpenWrt 25.12+ 使用 apk。官方源在 /etc/apk/repositories，
-#    这里替换为阿里云（可用环境变量 TENDA_MIRROR 覆盖）。
+#    ⚠️ 源文件路径踩过坑：apk 的源在 /etc/apk/repositories.d/distfeeds.list
+#    （distfeeds.list 才是当前 OpenWrt mainline 的实际位置），
+#    早期脚本只认 /etc/apk/repositories —— 那个文件**根本不存在**，
+#    于是每次都走「未找到，跳过镜像切换」，设备一直用境外官方源。
+#    这里两个路径都试一遍，兼容不同版本。
+#    切换后记得：`apk update` 重新拉索引。
 # -----------------------------------------------------------------------------
 switch_mirror() {
-	local repos=/etc/apk/repositories
-	[ -f "$repos" ] || { warn "未找到 $repos，跳过镜像切换"; return 0; }
-
 	local mirror="${TENDA_MIRROR:-https://mirrors.aliyun.com/openwrt}"
-	# 先备份，保留回退能力
-	[ -f "${repos}.origin" ] || cp "$repos" "${repos}.origin"
+	local repos found=0
 
-	if sed -i "s|https://downloads\.openwrt\.org|${mirror}|g" "$repos"; then
-		log "软件源已切换至: $mirror"
+	for repos in /etc/apk/repositories.d/distfeeds.list /etc/apk/repositories; do
+		[ -f "$repos" ] || continue
+		found=1
+
+		# 先备份，保留回退能力
+		[ -f "${repos}.origin" ] || cp "$repos" "${repos}.origin"
+
+		if grep -q "${mirror}" "$repos"; then
+			log "软件源已是 $mirror，跳过 ($repos)"
+		elif sed -i "s|https://downloads\.openwrt\.org|${mirror}|g" "$repos"; then
+			log "软件源已切换至 $mirror ($repos)"
+		else
+			warn "镜像切换失败 ($repos)，保持官方源"
+		fi
+	done
+
+	if [ "$found" -eq 1 ]; then
+		apk update >/dev/null 2>&1 && log "apk update 成功" \
+			|| warn "apk update 失败，换源后请手动重试"
 	else
-		warn "镜像切换失败，保持官方源"
+		warn "未找到 apk 软件源文件，换源跳过（不影响使用，只是慢）"
 	fi
 }
 
@@ -257,9 +274,37 @@ try_install_mwan3() {
 	fi
 
 	log "尝试安装 mwan3（原生 nft 移植版）…"
-	sh /usr/lib/tenda/install-mwan3.sh 2>&1 | while read -r line; do
+	# ⚠️ 失败很正常（GitHub Releases 在大陆时通时不通），**不要阻塞启动**。
+	#    这里只记录日志，用户之后手动跑一次即可。
+	local out rc
+	out="$(sh /usr/lib/tenda/install-mwan3.sh 2>&1)"; rc=$?
+	printf '%s\n' "$out" | while read -r line; do
 		logger -t "$LOG_TAG" -p user.info "$line"
 	done
+	if [ $rc -ne 0 ] || ! command -v mwan3 >/dev/null 2>&1; then
+		warn "mwan3 自动安装未成功（多为 GitHub 不通）。联网后手动执行："
+		warn "  sh /usr/lib/tenda/install-mwan3.sh"
+	fi
+}
+
+# -----------------------------------------------------------------------------
+# 7b. 关闭 frpc 开机自启
+#    luci-app-frpc 的出厂默认里 server_addr='127.0.0.1'，是**占位值**——
+#    frpc 会去连路由器自己，必然失败。再叠加 login_fail_exit='true'
+#    和 respawn='1'，就是无限崩溃循环（实测 Run #15 刷完 6 次 crash loop）。
+#    真正的服务端地址要用户自己填，所以这里先关掉自启，避免无意义的重启风暴。
+# -----------------------------------------------------------------------------
+disable_frpc_autostart() {
+	[ -f /etc/config/frpc ] || return 0
+	local addr
+	addr="$(uci -q get frpc.common.server_addr 2>/dev/null)"
+	if [ "$addr" = "127.0.0.1" ] || [ -z "$addr" ]; then
+		uci set frpc.@init[0].enabled='0' 2>/dev/null
+		uci commit frpc 2>/dev/null
+		/etc/init.d/frpc stop 2>/dev/null
+		/etc/init.d/frpc disable 2>/dev/null
+		log "frpc 已保持关闭（server_addr 是占位默认值，需在 LuCI 填真实服务端后再启用）"
+	fi
 }
 
 # -----------------------------------------------------------------------------
@@ -298,6 +343,7 @@ ensure_lan
 check_interfaces
 register_themes
 disable_wifi
+disable_frpc_autostart
 log_hardware
 try_install_mwan3
 
