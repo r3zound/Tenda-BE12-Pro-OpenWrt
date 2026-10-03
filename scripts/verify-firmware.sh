@@ -180,6 +180,8 @@ DHCP 池数量 100|set dhcp.lan.limit='100'
 防火墙 lan 区放行|input='ACCEPT'
 时区 CST-8|set system.@system[0].timezone='CST-8'
 主机名 Tenda-BE12-Pro|set system.@system[0].hostname='Tenda-BE12-Pro'
+EOF
+
   # ---- 段类型守卫（本项目的第 9 个静默坑）----
   # ⚠️ `set <包>.<段>=<值>` 在 uci batch 里是**给段赋类型**，不是赋选项值。
   #    dnsmasq 的 init 脚本只遍历 `config_foreach filter_dnsmasq dhcp`，
