@@ -735,15 +735,53 @@ LuCI「系统 → 系统」显示的就是它。`%C` 来自 **`CONFIG_VERSION_CO
 
 #### 三个必须知道的约束
 
-1. **`CONFIG_VERSION_NUMBER` 不能动** —— 它进 `DISTRIB_RELEASE`，
-   会影响 apk 的包版本比较
-2. **`CONFIG_VERSION_CODE_FILENAMES` 必须钉死为 `n`**
-   —— 它的 Kconfig 默认是 **`y`**（`package/base-files/image-config.in:280`），
-   开了以后 `include/image.mk:49` 的 `IMG_PREFIX_VERCODE` 会把版本码作为
-   **前缀**插进文件名，和我们自己的**后缀**撞车，变成
-   `r1-...-20261004.0031-openwrt-...-sysupgrade-20261004.0031.bin` 两头都有日期
-3. **版本串只能用 `[0-9a-z.-]`** —— 它同时写进 `/etc/openwrt_version`，
-   下游有 shell 在读，带空格会被拆成两个参数
+1. **`CONFIG_VERSIONOPT` 默认是 `n`，不打开的话赋值会被 defconfig 丢掉**
+   —— `package/base-files/image-config.in:161-163`：
+   ```kconfig
+   menuconfig VERSIONOPT
+       bool "Version configuration options" if IMAGEOPT
+       default n
+   ```
+   所有 `CONFIG_VERSION_*` 都在这个**不可见的菜单块**里。
+   直接往 `.config` 写 `CONFIG_VERSION_CODE="..."` 再 `make defconfig`，
+   kconfig 会当成无效赋值**静默删除** —— 日志里照样打印
+   `# configuration written to .config`，一切看起来正常，
+   只有回读校验才发现值没了。**Run #20 就这么失败的。**
+
+   必须同时写 `CONFIG_VERSIONOPT=y`。
+
+2. **打开 `VERSIONOPT` 之后，`CONFIG_VERSION_CODE_FILENAMES` 的默认 `y` 会真正生效**
+   —— `include/image.mk:49` 的 `IMG_PREFIX_VERCODE` 会把版本码作为**前缀**
+   插进文件名，和我们自己的**后缀**撞车，变成
+   `r1-...-20261004.0031-openwrt-...-sysupgrade-20261004.0031.bin` 两头都有日期。
+   所以第 1 条和这条必须**一起**做：开 `VERSIONOPT` + 钉死 `FILENAMES=n`
+
+3. **`CONFIG_VERSION_NUMBER` 不能动**（它进 `DISTRIB_RELEASE`，影响 apk 包版本比较），
+   **版本串只能用 `[0-9a-z.-]`**（同时写进 `/etc/openwrt_version`，
+   下游有 shell 在读，带空格会被拆成两个参数）
+
+#### ⚠️ 版本串的生成步骤必须排在 `gen-feeds.sh` 之后
+
+`REVISION` 来自 OpenWrt 源码树里的 `scripts/getver.sh`，而那棵树是
+`gen-feeds.sh`（`git clone --filter=blob:none`）才拉出来的。
+
+Run #20 把「生成构建时间戳」排在了 `gen-feeds.sh` **前面**，
+那时候 `$OPENWRT_SRC` 还不存在 → `getver.sh` 跑不了 →
+版本串变成毫无信息量的 `unknown-20261004.0041`。
+
+`build_revision()` 现在的做法是：拿不到就退回 `git-<短hash>` 并**打警告**，
+而不是安静地返回 `unknown` —— `unknown` 是个看起来合法的字符串，
+会悄悄混进版本串（OpenWrt 自己就把它当合法 REVISION 用）。
+
+#### ⚠️ `tee -a "$GITHUB_ENV"` 不会让当前 shell 拿到变量
+
+```sh
+./scripts/build-stamp.sh "$SRC" | tee -a "$GITHUB_ENV"
+echo "$TENDA_BUILD_VERSION"     # ← 空的！变量只在后续步骤里有
+```
+
+Run #20 的日志里打出来是 `LuCI 系统页会显示: OpenWrt SNAPSHOT `（后面什么都没有）。
+要在**当前步骤**里用，必须自己 `eval` 一遍。
 
 #### revision 必须调用 OpenWrt 自己的 getver.sh
 
@@ -1094,6 +1132,23 @@ grep -q 'stamp-firmware.sh' .github/workflows/build.yml \
 # 它默认是 y，开了会给 .bin 加**前缀**，和我们的**后缀**撞车变成两头都有日期
 grep -q 'CONFIG_VERSION_CODE_FILENAMES is not set' scripts/gen-config.sh \
   || echo "❌ 没钉死 CONFIG_VERSION_CODE_FILENAMES=n（坑 15）"
+# ⚠️ 更根本的一条：CONFIG_VERSIONOPT 默认是 n，不打开的话
+#    CONFIG_VERSION_CODE 会被 make defconfig **静默删掉**，日志一切正常。
+#    Run #20 就是这么失败的（坑 15）。
+# ⚠️ 检查时必须匹配 **echo 语句本身**（用 -F 固定字符串）：
+#    只 grep "CONFIG_VERSIONOPT=y" 的话，脚本里那句回读校验
+#    `grep -qE '^CONFIG_VERSIONOPT=y$' .config` 也会命中，
+#    变成「注入语句被删了也照样通过」。
+grep -qF 'echo "CONFIG_VERSIONOPT=y"' scripts/gen-config.sh \
+  || echo "❌ 没写 CONFIG_VERSIONOPT=y —— 版本串会被 defconfig 丢掉"
+grep -qF 'echo "CONFIG_VERSION_CODE=\"$TENDA_BUILD_VERSION\""' scripts/gen-config.sh \
+  || echo "❌ 没把版本码写进 .config"
+# 时间戳步骤必须排在 gen-feeds.sh 之后（那才 clone 出 OpenWrt 树，
+# getver.sh 在树里）。排在前面会得到 unknown-<时间戳>（Run #20 的教训）。
+sg=$(grep -n 'name: 生成构建时间戳' .github/workflows/build.yml | cut -d: -f1)
+sf=$(grep -n 'name: 生成 feeds.conf' .github/workflows/build.yml | cut -d: -f1)
+[ "$sg" -gt "$sf" ] && echo "  ok  时间戳在 feeds.conf 之后" \
+  || echo "❌ 时间戳步骤排在了 gen-feeds.sh 前面 —— getver.sh 跑不了（坑 15）"
 # 版本串里不能有空格/括号/斜杠：会写进 /etc/openwrt_version，下游有 shell 在读
 . scripts/lib/stamp.sh
 [[ "$(build_version r1-abc "$(bj_stamp)")" =~ ^[0-9a-zA-Z._-]+$ ]] \

@@ -55,12 +55,20 @@ fi
 {
   echo ""
   echo "# ---- 本项目附加：版本标识（build-stamp.sh 生成）----"
+  # ⚠️⚠️ CONFIG_VERSIONOPT 默认是 **n**（package/base-files/image-config.in:161-163
+  #    `menuconfig VERSIONOPT / bool "Version configuration options" / default n`）。
+  #    所有 CONFIG_VERSION_* 都在这个不可见的菜单块里，
+  #    **`make defconfig` 会把直接写进去的赋值丢掉** —— Run #20 就是这么失败的：
+  #    日志里 .config 写好了，「configuration written to .config」也正常，
+  #    但回读校验发现 CONFIG_VERSION_CODE 已经不见了。
+  #    所以必须先把这个开关打开，块里的选项才会被保留。
+  echo "CONFIG_VERSIONOPT=y"
   echo "CONFIG_VERSION_CODE=\"$TENDA_BUILD_VERSION\""
-  # 必须钉死为 n：它的 Kconfig 默认是 y，一旦为 y，
-  # include/image.mk:49 的 IMG_PREFIX_VERCODE 会把版本码作为**前缀**
-  # 插进 .bin 文件名，和我们自己在 stamp-firmware.sh 里加的**后缀**撞车，
-  # 结果是 r1-...-20261004.0031-openwrt-...-sysupgrade-20261004.0031.bin
-  # 两头都有日期。所以这里文件名的形态由我们自己掌控。
+  # ⚠️ 而且打开 VERSIONOPT 之后，下面这个选项的 Kconfig 默认 **y** 会真正生效，
+  #    include/image.mk:49 的 IMG_PREFIX_VERCODE 就会把版本码作为**前缀**
+  #    插进 .bin 文件名，和我们自己在 stamp-firmware.sh 里加的**后缀**撞车，
+  #    结果是 r1-...-20261004.0031-openwrt-...-sysupgrade-20261004.0031.bin
+  #    两头都有日期。所以这里文件名的形态由我们自己掌控，必须钉死为 n。
   echo "# CONFIG_VERSION_CODE_FILENAMES is not set"
 } >> .config
 
@@ -78,11 +86,23 @@ if grep -q "^CONFIG_VERSION_CODE=\"$TENDA_BUILD_VERSION\"$" .config; then
   echo "  ✅ CONFIG_VERSION_CODE = $TENDA_BUILD_VERSION"
 else
   echo "  ❌ CONFIG_VERSION_CODE 没进 .config 或被 defconfig 改写（LuCI 会显示旧版本串）"
+  echo "     期望 .config 里有: CONFIG_VERSION_CODE=\"$TENDA_BUILD_VERSION\""
+  echo "     实际 .config 里相关行:"
+  grep -E 'CONFIG_VERSION' .config | sed 's/^/       /' || echo "       （一条都没有 —— VERSIONOPT 没打开？）"
+  vfail=1
+fi
+# 开关本身也要确认：没有它，块里的赋值会被 defconfig 丢掉
+if grep -qE '^CONFIG_VERSIONOPT=y$' .config; then
+  echo "  ✅ CONFIG_VERSIONOPT=y（版本选项所在的菜单块已打开）"
+else
+  echo "  ❌ CONFIG_VERSIONOPT 不是 y —— make defconfig 会丢掉 CONFIG_VERSION_CODE"
   vfail=1
 fi
 # CONFIG_VERSION_CODE_FILENAMES 必须仍然是关的，否则文件名会出现两段日期
 if grep -qE '^CONFIG_VERSION_CODE_FILENAMES=y$' .config; then
   echo "  ❌ CONFIG_VERSION_CODE_FILENAMES 被 defconfig 打开了 —— .bin 文件名会出现前缀+后缀两段日期"
+  echo "     .config 里那行现在是:"
+  grep -E 'CONFIG_VERSION_CODE_FILENAMES' .config | sed 's/^/       /'
   vfail=1
 else
   echo "  ✅ CONFIG_VERSION_CODE_FILENAMES 未开启（文件名前缀交给 stamp-firmware.sh）"

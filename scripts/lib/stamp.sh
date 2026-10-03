@@ -55,13 +55,34 @@ bj_stamp_readable() {
 #    再拼上游分歧点的短 hash。手写十有八九对不上，
 #    而版本串里 hash 对不上比没有 hash 更糟 —— 看起来像真的，其实是假的。
 #    溯源：include/toplevel.mk:16 `REVISION:=$(shell $(TOPDIR)/scripts/getver.sh)`
+#
+# ⚠️⚠️ 调用前提：**OpenWrt 源码树必须已经 clone 出来**。
+#    Run #20 就栽在这：生成时间戳的步骤排在「拉取 feeds」之前，
+#    那时候 $OPENWRT_SRC 还不存在，getver.sh 跑不了，
+#    版本串变成了毫无信息量的 "unknown-20261004.0041"。
+#    所以这个步骤必须排在 gen-feeds.sh 之后。
 build_revision() { # $1=openwrt 源码目录
 	local src="${1:?缺少 openwrt 源码目录}"
 	local rev=""
-	if [ -x "$src/scripts/getver.sh" ] || [ -f "$src/scripts/getver.sh" ]; then
+	if [ -f "$src/scripts/getver.sh" ]; then
 		rev="$(cd "$src" && TOPDIR="$src" sh "$src/scripts/getver.sh" 2>/dev/null | head -1)" || rev=""
 	fi
-	[ -n "$rev" ] || rev="unknown"
+	# ⚠️ 不要直接回退成 "unknown"：那是个看起来合法的字符串，
+	#    会安静地混进版本串（OpenWrt 自己就把它当合法 REVISION 用）。
+	#    拿不到就用短 hash，好歹还能溯源，而且一眼看得出不是 getver.sh 的结果。
+	if [ -z "$rev" ] || [ "$rev" = "unknown" ]; then
+		if [ -d "$src/.git" ]; then
+			rev="git-$(cd "$src" && git rev-parse --short HEAD 2>/dev/null | head -1)"
+		fi
+		[ -n "$rev" ] || rev=""
+		echo "⚠️ 取不到 OpenWrt 官方 REVISION（getver.sh 没跑成）" >&2
+		echo "   源码树: $src" >&2
+		if [ -n "$rev" ]; then
+			echo "   退回用短 hash: $rev（溯源够用，但格式和 r1-xxx 不同）" >&2
+		else
+			echo "   连短 hash 都拿不到，版本串将只剩时间戳" >&2
+		fi
+	fi
 	printf '%s' "$rev"
 }
 

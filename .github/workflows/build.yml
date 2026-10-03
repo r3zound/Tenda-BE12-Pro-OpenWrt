@@ -88,21 +88,37 @@ jobs:
             | while IFS='=' read -r k v; do printf "  %-28s %s\n" "$k" "$v"; done
 
       # ---------------------------------------------------------------------
-      - name: 生成构建时间戳（北京时间）
-        run: |
-          # ⚠️ 必须排在**所有**会用到它的步骤之前，而且**全程只算一次**。
-          #    版本串（CONFIG_VERSION_CODE）和 .bin 文件名后缀必须是同一个值，
-          #    各算各的会出现「版本串写 00:31、文件名写 00:32」这种没法排查的错。
-          #    经 GITHUB_ENV 传给后续所有步骤。
-          ./scripts/build-stamp.sh "$OPENWRT_SRC" | tee -a "$GITHUB_ENV"
-          echo "  LuCI 系统页会显示: OpenWrt SNAPSHOT $TENDA_BUILD_VERSION"
-          echo "  .bin 文件名会变成: ...-squashfs-sysupgrade-$TENDA_BUILD_STAMP.bin"
-
-      # ---------------------------------------------------------------------
       - name: 生成 feeds.conf（锁定 commit）
         run: |
           chmod +x scripts/*.sh
           ./scripts/gen-feeds.sh "$OPENWRT_SRC"
+
+      # ---------------------------------------------------------------------
+      - name: 生成构建时间戳（北京时间）
+        run: |
+          # ⚠️ 必须排在「生成 feeds.conf」**之后** —— gen-feeds.sh 才把 OpenWrt
+          #    源码树 clone 出来，而版本串里的 revision 来自树里的 scripts/getver.sh。
+          #    Run #20 就因为排在前面，那会儿 $OPENWRT_SRC 还不存在，
+          #    版本串变成了毫无信息量的 "unknown-20261004.0041"。
+          #
+          # ⚠️ 必须排在**所有**会用它的步骤之前，而且**全程只算一次**。
+          #    版本串（CONFIG_VERSION_CODE）和 .bin 文件名后缀必须是同一个值，
+          #    各算各的会出现「版本串写 00:31、文件名写 00:32」这种没法排查的错。
+          #    经 GITHUB_ENV 传给后续所有步骤。
+          vals="$(./scripts/build-stamp.sh "$OPENWRT_SRC")"
+          echo "$vals"
+          echo "$vals" >> "$GITHUB_ENV"
+          # ⚠️ 上面是写到 GITHUB_ENV，**本步骤的 shell 里并没有这些变量** ——
+          #    Run #20 里这行打出来是「LuCI 系统页会显示: OpenWrt SNAPSHOT 」（空的）。
+          #    要在当前 shell 用，必须自己 eval 一遍。
+          eval "$(echo "$vals" | sed 's/^\([A-Z_]*\)=\(.*\)$/export \1="\2"/')"
+          echo "  LuCI 系统页会显示: OpenWrt SNAPSHOT $TENDA_BUILD_VERSION"
+          echo "  .bin 文件名会变成: ...-squashfs-sysupgrade-$TENDA_BUILD_STAMP.bin"
+          case "$TENDA_BUILD_REV" in
+            r[0-9]*-[0-9a-f]*) echo "  ✅ revision 来自 getver.sh: $TENDA_BUILD_REV" ;;
+            git-*)           echo "  ⚠️ 没能用上 getver.sh，退回短 hash: $TENDA_BUILD_REV" ;;
+            *)               echo "  ❌ 拿不到任何 revision，版本串里不会有 hash" ;;
+          esac
 
       # ---------------------------------------------------------------------
       - name: 板级移植 ⚠️
