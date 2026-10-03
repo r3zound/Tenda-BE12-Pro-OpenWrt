@@ -86,6 +86,61 @@ switch_mirror() {
 }
 
 # -----------------------------------------------------------------------------
+# 1.5 安装自建 apk 源的信任公钥
+# -----------------------------------------------------------------------------
+# 自建源（r3zound/tenda-repo）用来放代理面板：PassWall / HomeProxy /
+# OpenClash / Nikki-RS 等，以及**必须同内核版本编译的 kmod**。
+# 源是自签名的，设备要靠 /etc/apk/keys/ 里的公钥才认它，
+# 否则每次 apk update 都报 UNTRUSTED signature、索引被丢弃（1 unavailable）。
+#
+# ⚠️ 为什么不直接把公钥放 files/etc/apk/keys/：
+#    那是坑 3 同一个坑 —— /etc/apk/keys 很可能被 apk-tools 声明了文件归属，
+#    自定义包直接覆盖会报 "trying to overwrite ... owned by apk-tools"，
+#    package/install 整体失败、固件直接产不出来。
+#    设备上 `apk audit --system` 又查不出确切归属，不赌它。
+#    所以：文件放我们自己的目录（/usr/share/tenda/apk-keys/），
+#    首启脚本再 cp 过去 —— 此时是普通文件写入，不走包安装，无归属冲突。
+#
+# ⚠️ 只覆盖/新增 public-key.pem，**绝不动** openwrt-snapshots.pem
+#    （那是官方快照源的签名公钥，动了会导致 apk update 全挂）。
+# -----------------------------------------------------------------------------
+install_repo_key() {
+	local src="/usr/share/tenda/apk-keys/public-key.pem"
+	local dst="/etc/apk/keys/public-key.pem"
+
+	[ -f "$src" ] || { warn "未找到自建源公钥 $src（该固件可能不含自建源）"; return 0; }
+	[ -d /etc/apk/keys ] || { warn "/etc/apk/keys 不存在，无法安装公钥"; return 0; }
+
+	# 已经装过且内容一致 → 不动，避免每次首启都改 mtime
+	if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
+		log "自建源公钥已就位"
+		return 0
+	fi
+
+	if cp -f "$src" "$dst" 2>/dev/null; then
+		chmod 0644 "$dst" 2>/dev/null
+		log "自建源公钥已安装到 $dst"
+	else
+		warn "公钥安装失败，自建源需要 apk update --allow-untrusted"
+		return 0
+	fi
+
+	# 回读校验：cp 返回 0 不等于内容对（坑 9/10/11/12 同一个教训）
+	if cmp -s "$src" "$dst"; then
+		log "公钥回读校验通过"
+	else
+		warn "公钥回读不一致，自建源需要 apk update --allow-untrusted"
+	fi
+
+	# 官方源的公钥必须还在 —— 动了它 apk update 会全挂
+	if [ -f /etc/apk/keys/openwrt-snapshots.pem ]; then
+		log "官方快照源公钥未受影响"
+	else
+		warn "官方快照源公钥不见了！apk update 会失败，检查固件完整性"
+	fi
+}
+
+# -----------------------------------------------------------------------------
 # 2. DHCP / 防火墙 / SSH / 系统配置
 # -----------------------------------------------------------------------------
 # ⚠️ 为什么这四项不在固件里以 /etc/config/* 文件形式下发，
@@ -563,6 +618,7 @@ log_hardware() {
 log "首次启动配置开始…"
 
 switch_mirror
+install_repo_key
 apply_base_config
 ensure_lan
 check_interfaces
