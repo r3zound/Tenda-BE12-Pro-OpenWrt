@@ -103,11 +103,22 @@ THEME_AURORA_COMMIT=84c27b66952e6fc4be60128067a6b88bfd34afb5
 #
 # ⚠️ 单个仓库改名/删分支不会中断固件构建（脚本有意容错），
 #    但会让对应面板从源里消失。每周构建的预编译阶段会打印失败清单。
+#
+# ⚠️⚠️ 实测（GitHub API 逐仓库查证，2026-10）：
+#   **13 个仓库里 12 个的包 Makefile 不在根目录**，而在子目录：
+#     openwrt-passwall  → luci-app-passwall/Makefile          深度 2
+#     coolsnowwolf/luci → applications/<pkg>/Makefile         深度 3
+#   OpenWrt 自己的扫描深度是 SCAN_DEPTH=5（include/toplevel.mk:106），
+#   所以挂到 package/ 是能扫到的。**任何校验 Makefile 存在性的地方，
+#   深度都必须 >= 5**，写成「只看根目录」会把 12/13 误判成坏的。
+#
+#   **package/ 下的目录名 ≠ OpenWrt 包名**：homeproxy 目录里 define 的是
+#   luci-app-homeproxy。拿目录名去匹配 .apk 文件名永远匹配不到。
+#   build-repo.sh 是运行时从 Makefile 里 grep 出真实包名的，不硬编码。
 # ============================================================================
 
 REPO_PROXY_PASSWALL=openwrt-passwall|https://github.com/Openwrt-Passwall/openwrt-passwall.git|main
 REPO_PROXY_PASSWALL2=openwrt-passwall2|https://github.com/Openwrt-Passwall/openwrt-passwall2.git|main
-REPO_PROXY_SSRPLUS=luci-app-ssr-plus|https://github.com/coolsnowwolf/luci.git|master
 REPO_PROXY_HOMEPROXY=homeproxy|https://github.com/immortalwrt/homeproxy.git|master
 REPO_PROXY_NIKKIRS=OpenWrt-nikki-rs|https://github.com/CHKayanami/OpenWrt-nikki-rs.git|main
 REPO_PROXY_CLASHRS=clash-rs|https://github.com/CHKayanami/clash-rs.git|master
@@ -118,6 +129,18 @@ REPO_PROXY_NEKOBOX=luci-app-nekobox|https://github.com/Thaolga/openwrt-nekobox.g
 REPO_PROXY_HIJPASS=luci-app-hijpass|https://github.com/WROIATE/luci-app-hijpass.git|main
 REPO_PROXY_XRAY=luci-app-xray|https://github.com/yichya/luci-app-xray.git|master
 REPO_PROXY_FCHOMO=openwrt-fchomo|https://github.com/fcshark-org/openwrt-fchomo.git|master
+
+# ⛔ 已从清单里移除：REPO_PROXY_SSRPLUS
+#
+#    原条目：coolsnowwolf/luci | master
+#    实测该仓库 master 分支**一个 ssr 包都没有**：整棵树只有 46 个 Makefile，
+#    全部在 applications/ 下（accesscontrol / adblock / aria2 / argon-config …），
+#    grep -i ssr 零命中。也就是说这条 clone 下来只会往 package/ 里塞 46 个
+#    **和官方 luci feed 撞名**的无关面板，自己要的东西一个没有。
+#
+#    待办：ssr-plus 的正确仓库待重新查证后补回（API 限流没查完）。
+#    在补回来之前，源里就是没有 ssr-plus —— 这是已知缺口，不是静默失败：
+#    build-repo.sh 会对「clone 到了但没发现任何包名」的仓库显式告警。
 
 # ============================================================================
 # ⛔ 刻意 NOT 锁定的组

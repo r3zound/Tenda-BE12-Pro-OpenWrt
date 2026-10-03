@@ -243,6 +243,42 @@ jobs:
         run: make download -j$(nproc) V=s
 
       # ---------------------------------------------------------------------
+      - name: 注入签名密钥 ⚠️
+        id: repokey
+        env:
+          # ⚠️ 必须走 env，不能把 secret 直接插进 run 字符串 ——
+          #    PEM 里出现引号/反斜杠会把 YAML 里的 shell 脚本截断。
+          KEY: ${{ secrets.TENDO_REPO_PRIVATE_KEY }}
+        run: |
+          # 🔑 签名链路（全部实测自 OpenWrt 源码）：
+          #    rules.mk:350   BUILD_KEY_APK_SEC = $(TOPDIR)/private-key.pem
+          #    rules.mk:351   BUILD_KEY_APK_PUB = $(TOPDIR)/public-key.pem
+          #    package/Makefile:91  没这两个文件就 **现场生成一把 EC 临时密钥**
+          #    package/base-files:127  公钥自动进镜像 /etc/apk/keys/
+          #
+          # ⛔ 必须在 `make` 之前放好。索引签名和公钥进镜像都发生在 make 过程中，
+          #    放晚了就来不及了 —— 而且临时私钥当场丢弃，下次构建老固件就不认新源了。
+          if [ -z "$KEY" ]; then
+            echo "::warning::未配置 secret TENDO_REPO_PRIVATE_KEY"
+            echo "OpenWrt 会自动生成一次性 EC 密钥：固件能用，但**不自建源相关步骤全部跳过**"
+            echo "have_key=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s\n' "$KEY" > "$OPENWRT_SRC/private-key.pem"
+          cp keys/public-key.pem "$OPENWRT_SRC/public-key.pem"
+          chmod 600 "$OPENWRT_SRC/private-key.pem"
+
+          # 回读校验：公钥必须和这把私钥是一对，否则设备永远验不过索引签名
+          a=$(openssl pkey -in "$OPENWRT_SRC/private-key.pem" -pubout -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)
+          b=$(openssl pkey -pubin -in "$OPENWRT_SRC/public-key.pem" -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)
+          if [ -z "$a" ] || [ -z "$b" ] || [ "$a" != "$b" ]; then
+            echo "::error::keys/public-key.pem 和 secret 里的私钥不是一对"
+            exit 1
+          fi
+          echo "✅ 密钥对校验通过（pubkey sha256 ${b:0:16}…）"
+          echo "have_key=true" >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------------------
       - name: 编译固件
         working-directory: openwrt
         env:
@@ -298,6 +334,84 @@ jobs:
           # Run #5 就是编译全绿、体积守卫也过，但预置配置文件一个都没进固件；
           # Run #5 的三个 LuCI 主题也全都没进。只有直接扫 squashfs 才抓得住。
           ./scripts/verify-firmware.sh "$OPENWRT_SRC"
+
+      # =====================================================================
+      # 自建 apk 源（r3zound/tenda-repo）
+      # ---------------------------------------------------------------------
+      # 全部条件在 have_key 上：没有稳定私钥就一步都不做。
+      # 宁可这个星期的源还是上周的，也不能拿一次性密钥签一个设备永远认不了的索引。
+      #
+      # ⚠️ 这些步骤必须和固件构建在**同一个 job**里 —— 源的价值就在于
+      #    「和固件同一次构建、同一个 build root 产出」，kmod vermagic 100% 匹配。
+      #    拆成另一个 job 就得重编一遍，意义全无。
+      # =====================================================================
+      - name: 拉取面板仓库
+        if: steps.repokey.outputs.have_key == 'true'
+        run: |
+          ./scripts/fetch-proxy-packages.sh "$OPENWRT_SRC"
+
+      - name: 面板仓库就位校验 ⚠️
+        if: steps.repokey.outputs.have_key == 'true'
+        run: |
+          # clone 返回 0 ≠ 包能被编。必须确认目录里有 Makefile，
+          # 否则 .config 里压根没有这个符号，make 会一路绿灯。
+          #
+          # ⚠️ versions.lock 在**仓库根**，不在 openwrt/ 里 —— 先读清单再 cd，
+          #    否则 grep 会安静地匹配不到任何东西，N=0 只因为路径错了。
+          grep -E '^REPO_PROXY_[A-Z0-9_]+=' "$GITHUB_WORKSPACE/versions.lock" \
+            | sed 's/^[^=]*=//' | cut -d'|' -f1 | grep -v '^$' > /tmp/panel-dirs.txt
+          cd "$OPENWRT_SRC"
+          N=0; BAD=0
+          while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            N=$((N+1))
+            # ⚠️ 不能只查 package/$d/Makefile：实测 13 个面板仓库里
+            #    **12 个的包 Makefile 不在根目录**，而在子目录 ——
+            #      openwrt-passwall/luci-app-passwall/Makefile
+            #      coolsnowwolf/luci   → applications/<pkg>/Makefile（深度 3）
+            #    OpenWrt 自己的扫描深度是 SCAN_DEPTH=5（include/toplevel.mk:106），
+            #    这里必须跟着用同样的深度，否则会把 12/13 误判成坏的。
+            if ! find "package/$d" -maxdepth 5 -name Makefile -type f -print -quit 2>/dev/null | grep -q .; then
+              echo "  ❌ $d 深度 5 内没有 Makefile"
+              BAD=$((BAD+1))
+            fi
+          done < /tmp/panel-dirs.txt
+          echo "清单里有 $N 个面板仓库，其中 $BAD 个不可用"
+          # 面板挂掉不阻断：固件已经编出来了，面板是加分项
+          [ "$N" -gt 0 ] || { echo "::error::versions.lock 里一个 REPO_PROXY_* 都没有"; exit 1; }
+
+      # ---------------------------------------------------------------------
+      - name: 构建自建源
+        if: steps.repokey.outputs.have_key == 'true'
+        env:
+          REPO_BRANCH: ${{ startsWith(github.ref, 'refs/tags/') && 'tag' || github.ref_name }}
+        run: |
+          ./scripts/build-repo.sh "$OPENWRT_SRC" ./apk-repo
+          echo "──── 自建源摘要 ────"
+          head -20 apk-repo/BUILD-INFO.txt
+
+      - name: 上传自建源产物
+        if: always() && steps.repokey.outputs.have_key == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-repo-${{ github.run_number }}
+          path: |
+            apk-repo/BUILD-INFO.txt
+            apk-repo/packages.adb
+            apk-repo/packages.adb.sig
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: 发布自建源到 GitHub Pages
+        if: steps.repokey.outputs.have_key == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_BRANCH: ${{ startsWith(github.ref, 'refs/tags/') && 'tag' || github.ref_name }}
+        run: |
+          # ⚠️ 校验不过就不推：build-repo.sh 失败时本步骤直接跳过，
+          #    Pages 上保留上一版好内容。推一半会让设备拉到索引却下不到包，比不推更糟。
+          [ -f apk-repo/packages.adb ] || { echo "::error::没有索引，拒绝发布"; exit 1; }
+          ./scripts/publish-repo.sh ./apk-repo "$REPO_BRANCH" r3zound/tenda-repo
 
       # ---------------------------------------------------------------------
       - name: 上传 ccache

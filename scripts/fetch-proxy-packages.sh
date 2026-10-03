@@ -74,17 +74,18 @@ done
 
 # ---- 回读校验 ---------------------------------------------------------------
 # ⚠️ clone 返回 0 不等于包能被扫到：必须有 Makefile，否则 .config 里不会有符号。
-step "回读校验（每个仓库必须有 Makefile）"
+step "回读校验（深度 5 内必须有 Makefile，深度对齐 OpenWrt SCAN_DEPTH）"
 MISSING=0
 proxies | while IFS='|' read -r dest url branch; do
   [ -n "$dest" ] || continue
   target="$SRC/package/$dest"
-  if [ -f "$target/Makefile" ]; then
-    :
-  elif find "$target" -maxdepth 2 -name Makefile -print -quit 2>/dev/null | grep -q .; then
+  # ⚠️ maxdepth 5 不是随便写的：include/toplevel.mk:106 里 OpenWrt 扫 package/
+  #    用的是 SCAN_DEPTH=5。实测 13 个面板仓库里 12 个的包 Makefile 不在根目录，
+  #    这里要是写成 maxdepth 2，就会把 openwrt-passwall 那类全部误判成「结构变了」。
+  if find "$target" -maxdepth 5 -name Makefile -type f -print -quit 2>/dev/null | grep -q .; then
     :
   else
-    echo "  ${YEL}·${RST} $dest 没有 Makefile —— 这个面板不会被编（上游结构变了？）"
+    echo "  ${YEL}·${RST} $dest 深度 5 内没有 Makefile —— 这个面板不会被编（上游结构变了？）"
   fi
 done
 

@@ -28,9 +28,13 @@ die()  { echo "${RED}❌ $*${RST}" >&2; exit 1; }
 [ -d "$SRC" ] || die "产物目录不存在: $SRC"
 [ -s "$SRC/packages.adb" ] || die "没有 packages.adb —— 拒绝发布"
 
-tok="$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null \
+tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+if [ -z "$tok" ]; then
+  # 本地开发走 credential helper；CI 里没有 .gitconfig，用 env 里的 token（见上）。
+  tok="$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null \
        | grep '^password=' | head -1 | cut -d= -f2-)"
-[ -n "$tok" ] || die "拿不到 GitHub 凭据"
+fi
+[ -n "$tok" ] || die "拿不到 GitHub 凭据（设 GH_TOKEN，或在本地用 git credential）"
 
 api() { # $1=method $2=url $3=body
   curl -s -X "$1" -H "Authorization: token $tok" \
