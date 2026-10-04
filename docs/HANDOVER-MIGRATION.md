@@ -3,7 +3,7 @@
 > 读者：把这台机器换掉之后、拿到这份文档的人或 agent。
 >
 > 写作时间：2026-10-04（北京时间）
-> 代码状态：分支 `immortalwrt-25.12`，HEAD `4f67b45`，工作树干净，已推送
+> 代码状态：分支 `immortalwrt-25.12`，HEAD `d9cc194`（本文件随该提交入库），工作树干净，已推送
 > 设备状态：Tenda BE12 Pro 刷的是 Run #18 产物 `cb5c51a`，内核 6.18.54
 
 ---
@@ -186,7 +186,8 @@ bash /d/OneDrive/User/Network/Router/tenda_be12-pro/.sshhelper/rscp.sh <本地PO
 git clone https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt.git
 cd Tenda-BE12-Pro-OpenWrt
 git checkout immortalwrt-25.12
-git log --oneline -1     # 期望: 4f67b45
+git log --oneline -1     # 期望: d9cc194 或更新
+ls docs/HANDOVER-MIGRATION.md   # 这份文档本身，验 clone 对不对最直接
 ```
 
 分支情况（截至写作时）：
@@ -194,7 +195,7 @@ git log --oneline -1     # 期望: 4f67b45
 | 分支 | HEAD |
 |---|---|
 | `main` | `cf00b83` |
-| `immortalwrt-25.12` | `4f67b45` ← 当前在做的 |
+| `immortalwrt-25.12` | `d9cc194` ← 当前在做的 |
 
 ⚠️ **`main` 是旧的**（停在坑 12/13 修完那会儿），坑 14/15 的东西全在 `immortalwrt-25.12` 上。
 别 checkout 错了。
@@ -318,7 +319,11 @@ cd "$ROOT" || exit 1
 git rev-parse --abbrev-ref HEAD | grep -q immortalwrt-25.12 \
   && ok "在 immortalwrt-25.12 分支" || no "分支不对（当前 $(git rev-parse --abbrev-ref HEAD)）"
 [ -z "$(git status --porcelain)" ] && ok "工作树干净" || no "工作树有未提交改动"
-git log --oneline -1 | grep -q 4f67b45 && ok "HEAD = 4f67b45" || no "HEAD 不是 4f67b45"
+# ⚠️ 别把具体 hash 写死在这里 —— 每次提交都会过期，判据会假失败。
+#    改成验「这份交接文档确实在 checkout 里」。
+[ -f "$ROOT/docs/HANDOVER-MIGRATION.md" ] \
+  && ok "交接文档在位 (HEAD $(git log --oneline -1 | cut -c1-7))" \
+  || no "缺 docs/HANDOVER-MIGRATION.md，clone 的版本不对"
 
 echo "▸ 私钥（不可逆，优先查）"
 if [ -f "$ROOT/.repo-keys/private-key.pem" ]; then
@@ -439,12 +444,12 @@ openwrt SNAPSHOT 内核 6.18、这次是 ImmortalWrt 内核 6.12）。**考虑�
 
 新机器上第一个 agent 读完 `AGENTS.md` 之后，直接说这句即可接上：
 
-> 接着 `immortalwrt-25.12` 分支干。HEAD 是 `4f67b45`。上一个会话的收尾状态：
-> CI Run #22 **并没有编译成功** —— 第 18 步显示绿灯是假的（`make | tee` 吞了退出码，已修），
-> artifact 里只有 8 个 BL2 preload，没有 sysupgrade 镜像。
+> 接着 `immortalwrt-25.12` 分支干。HEAD 是 `d9cc194`。上一个会话的收尾状态：
+> CI Run #22 **并没有编译成功** —— 第 18 步显示绿灯是假的（`make | tee` 吞了退出码，
+> 已在 `d9cc194` 修掉），artifact 里只有 8 个 BL2 preload，没有 sysupgrade 镜像。
 > 第 19 步的失败是**正确报警**，别去「修」它。
 > 真正待查的是 **`make` 为什么失败**：拉第 18 步的完整日志（约 46 MB）。
-> 另外交接文档在 `docs/HANDOVER-MIGRATION.md`，换机自检脚本在 §6。
+> 换机交接文档在 `docs/HANDOVER-MIGRATION.md`，自检脚本在 §6。
 
 ---
 
