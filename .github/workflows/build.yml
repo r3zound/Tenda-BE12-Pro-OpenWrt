@@ -320,11 +320,31 @@ jobs:
         run: |
           # frp 是 Go 包，构建耗时长，单独标记
           echo "▸ 预计耗时较长（frp 需要 Go 工具链）"
-          make -j$(nproc) V=s 2>&1 | tee /tmp/build.log || {
-            echo "❌ 编译失败，末尾 100 行日志："
+          # ⚠️⚠️ 必须取 make 自己的退出码，不能用 `make ... | tee ... || { exit 1; }`
+          #    管道整体的退出码是**最后一个命令**（tee）的，tee 几乎永远返回 0，
+          #    所以那个 || 分支永远不触发 —— make 崩了、没产出任何镜像，
+          #    这一步照样显示 ✅ success。
+          #    Run #22 就是这么被骗过去的：第 18 步「编译固件」绿灯，
+          #    实际 artifact 里只有 8 个 BL2 preload，**一个 sysupgrade 镜像都没有**。
+          #    是下一步 stamp-firmware.sh 的回读校验把它拦下来的。
+          #    （同一个文件 371 行的体积守卫早就用了 PIPESTATUS，这里是不一致。）
+          make -j$(nproc) V=s 2>&1 | tee /tmp/build.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo ""
+            echo "::error::编译失败（make 退出码 $rc），末尾 100 行日志："
             tail -100 /tmp/build.log
             exit 1
-          }
+          fi
+          # 额外兜底：编译「成功」但没出镜像，是 Run #22 的真实故障模式，
+          # 光看退出码不够 —— make 完全可能因为 incremental 而 no-op 成功。
+          if ! ls -1 bin/targets/mediatek/filogic/*squashfs-sysupgrade*.bin >/dev/null 2>&1; then
+            echo ""
+            echo "::error::make 退出码为 0，但 bin/targets/mediatek/filogic 下没有任何 sysupgrade 镜像"
+            ls -la bin/targets/mediatek/filogic/ || true
+            exit 1
+          fi
+          echo "✅ 编译成功，sysupgrade 镜像已产出"
 
       # ---------------------------------------------------------------------
       - name: 固件文件名加时间戳 ⚠️
