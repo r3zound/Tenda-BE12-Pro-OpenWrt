@@ -73,18 +73,38 @@ define Package/tenda-preset/install
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_DIR) $(1)/usr/lib/tenda
 	$(CP) ./files/etc/config/network         $(1)/etc/config/
+	$(CP) ./files/etc/config/wireless        $(1)/etc/config/
 	$(CP) ./files/etc/uci-defaults/*          $(1)/etc/uci-defaults/
 	$(CP) ./files/usr/lib/tenda/*             $(1)/usr/lib/tenda/
 	@chmod 0755 $(1)/etc/uci-defaults/99-tenda-custom
 	@chmod 0755 $(1)/usr/lib/tenda/install-mwan3.sh
 endef
 
-# ⚠️ 这里**只列 network**。
-#    dhcp / dropbear / firewall 归 dnsmasq / dropbear / firewall4 所有，
-#    一旦在这里也声明，apk 仍会在安装时报归属冲突（Run #9 实测）。
-#    它们改由 99-tenda-custom 的 uci batch 写入。
+# ⚠️ 这里只列 network 和 wireless —— 这两者**都没有任何已安装包声明归属**。
+#    （2026-10-13 解包固件后逐个查 apk 数据库核实：
+#      network 归 tenda-preset 自己；wireless **无归属**；
+#      而 dhcp / dropbear / firewall / luci 分别归
+#      dnsmasq / dropbear / firewall4 / luci-base。
+#      有归属的那些一旦在这里声明，apk 会报
+#      "trying to overwrite ... owned by X"，package/install 整体失败、
+#      固件直接产不出来（Run #9 实测）。它们改由 99-tenda-custom 的
+#      uci batch 写入 —— 那是普通文件写入，不走包归属检查。）
+#
+# ⚠️ wireless 为什么必须预置进固件、不能只靠首启 uci set（坑 10）：
+#    /etc/config/wireless 默认**不在 rootfs 里**，它由 /sbin/wifi config
+#    在运行时生成。配置缺失时 `uci set wireless.default_radio0.disabled='1'`
+#    会造出段类型错误的伪段（netifd / 生成器都不认），随后被整个洗掉 ——
+#    现象是「配了 WiFi 却没生效」，设备以无密码开放网络上线。
+#    所以必须把带正确段类型（wifi-device / wifi-iface）+ option path 的
+#    完整配置随固件下发。verify-firmware.sh 会解包固件回查这一条。
+#
+# ⚠️ 2026-10-13 修：此前这里**漏了 wireless**。文件在
+#    files/etc/config/ 里躺着却永远进不了固件，导致 Run #23/#24 的
+#    「固件内容抽查」报「固件里没有 /etc/config/wireless」。
+#    同一 bug 在 immortalwrt-25.12 上也有，已一并修（a2368a9）。
 define Package/tenda-preset/conffiles
 /etc/config/network
+/etc/config/wireless
 endef
 
 $(eval $(call BuildPackage,tenda-preset))

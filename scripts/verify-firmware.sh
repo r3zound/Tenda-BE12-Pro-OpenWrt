@@ -373,7 +373,19 @@ EOF
     ok_ "未把不含 snapshots 的镜像站当源使用（注释与 bad 清单除外）"
   fi
   # 默认必须是 USTC
-  if grep -qE "^[[:space:]]*local mirror=\"\$\{TENDA_MIRROR:-https://mirrors\.ustc\.edu\.cn/openwrt\}\"" "$TSC" 2>/dev/null; then
+  #
+  # ⚠️⚠️ 这行**必须用单引号**，不能改成双引号。（2026-10-13 修，坑 16）
+  #    被检查的文本里含字面 `${TENDA_MIRROR:-...}`，正则要匹配那个字面 `$`。
+  #    双引号写法 `"...\"\$\{TENDA_MIRROR..."` 里，bash 会把 `\$` 退化成**裸 `$`**，
+  #    而 grep -E 里裸 `$` 是「行尾锚点」—— 于是变成在找「行尾紧跟 {」，
+  #    **永远不可能匹配**。后果：固件里的源明明是 USTC（已 od -c 逐字节验过
+  #    \tlocal mirror="${TENDA_MIRROR:-https://mirrors.ustc.edu.cn/openwrt}"），
+  #    这一条也照样报 ❌，成为「修好也过不了」的死锁
+  #    （Run #23/#24 就是被它拦下的，另一条 wireless 才是真问题）。
+  #    单引号不做转义，`\$` 原样传给 grep -E = 字面美元符，正确。
+  #    正确性实测见 .sshhelper/prove-regex-bug.sh（A 不匹配 / B 匹配）。
+  #    同一 bug 在 immortalwrt-25.12 上也有，已一并修（a2368a9）。
+  if grep -qE '^[[:space:]]*local mirror="\$\{TENDA_MIRROR:-https://mirrors\.ustc\.edu\.cn/openwrt\}"' "$TSC" 2>/dev/null; then
     ok_ "默认软件源为 USTC 中科大（唯一提供 snapshots 反代的国内站）"
   else
     bad_ "默认软件源不是 mirrors.ustc.edu.cn/openwrt —— 检查 TENDA_MIRROR 的默认值"
