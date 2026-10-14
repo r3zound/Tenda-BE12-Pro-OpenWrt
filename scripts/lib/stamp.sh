@@ -129,5 +129,11 @@ find_sysupgrade_bin() { # $1=bin/targets/mediatek/filogic 目录
 # -----------------------------------------------------------------------------
 find_firmware_bins() { # $1=固件输出目录
 	local d="${1:?缺少固件输出目录}"
-	ls -1 "$d"/*.bin "$d"/*.itb 2>/dev/null | sort
+	# ⚠️⚠️ 不能用 `ls -1 "$d"/*.bin "$d"/*.itb`：
+	#     *.itb 不存在时，ls 对无匹配的 glob 返回**退出码 2**（GNU ls 行为），
+	#     在调用方的 set -euo pipefail 下，这个 2 会顺着管道传播，
+	#     把整个脚本判失败（Run #27 第 20 步就是这么「假失败」的——
+	#     固件其实都改名成功了，列表也打出来了，唯独最后这一行 exit 2）。
+	#     find 对「没找到文件」返回 0，不会误伤。
+	find "$d" -maxdepth 1 \( -name '*.bin' -o -name '*.itb' \) 2>/dev/null | sort
 }
