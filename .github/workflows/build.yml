@@ -76,7 +76,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ github.run_id }}
+          # ⚠️ 不能再用 run_id 当 key —— run_id 每次运行都不同，
+          #    精确命中永远失败，只能靠 restore-keys 兜底「最近的缓存」。
+          #    改成基于 versions.lock + base.config 的内容 hash：
+          #    上游版本 / 配置没变 → 精确命中；变了 → 兜底恢复 + 重新填。
+          key: ccache-${{ hashFiles('versions.lock', 'configs/base.config') }}
           restore-keys: |
             ccache-
 
@@ -486,7 +490,11 @@ jobs:
         if: always()
         with:
           path: ~/.ccache
-          key: ccache-${{ github.run_id }}
+          # ⚠️ 不能再用 run_id 当 key —— run_id 每次运行都不同，
+          #    精确命中永远失败，只能靠 restore-keys 兜底「最近的缓存」。
+          #    改成基于 versions.lock + base.config 的内容 hash：
+          #    上游版本 / 配置没变 → 精确命中；变了 → 兜底恢复 + 重新填。
+          key: ccache-${{ hashFiles('versions.lock', 'configs/base.config') }}
 
       # ---------------------------------------------------------------------
       - name: 上传固件产物
