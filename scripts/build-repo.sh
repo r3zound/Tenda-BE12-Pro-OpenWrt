@@ -229,10 +229,44 @@ fi
 
 # ---- 4. 收包（扁平，检测重名冲突）--------------------------------------------
 step "收集 .apk"
-ARCH="$(grep -m1 '^CONFIG_TARGET_ARCH_PKGSET=' "$SRC/.config" | cut -d= -f2-)"
-[ -n "$ARCH" ] || die "读不出 CONFIG_TARGET_ARCH_PKGSET"
-PDIR="$SRC/bin/packages/$ARCH"
-[ -d "$PDIR" ] || die "没有 $PDIR —— 固件还没编完？"
+# ⚠️⚠️ 这里**不能**再用 `grep CONFIG_TARGET_ARCH_PKGSET` 推导包目录名。
+#    Run #29 就是死在这：日志里最后一行是「▸ 收集 .apk」紧接着
+#    `##[error]Process completed with exit code 1.`，连 die 的提示都没打出来。
+#
+#    两个原因叠在一起：
+#      (1) CONFIG_TARGET_ARCH_PKGSET 这个符号在 ImmortalWrt 25.12 里
+#          **已经不存在了**（GitHub 代码搜索：TARGET_ARCH_PKGSET 全仓 0 命中）。
+#          实测该分支的包目录叫 aarch64_cortex-a53，是别的东西推出来的。
+#      (2) 本脚本开头是 `set -euo pipefail`。grep 找不到会返回 1，
+#          **赋值语句 `ARCH="$(grep ...)"` 自己就失败了**，脚本当场退出 ——
+#          后面那行 `[ -n "$ARCH" ] || die "读不出 ..."` 根本没机会执行。
+#
+#    和坑 4（unsquashfs 返回非 0）、坑 15（ls 空 glob 退 2）是同一个病：
+#    **命令的非零退出码在 set -e 下会先于守卫生效，把守卫变成死代码。**
+#
+#    改成从磁盘上发现：包集目录 = bin/packages/*/ 里那个**直接躺着
+#    packages.adb（扁平总索引）**的目录，feed 子目录（base/ luci/ routing/）
+#    自然被排除，因为它们只有子目录没有顶层索引。
+PDIR=""
+for cand in "$SRC"/bin/packages/*/; do
+  [ -d "$cand" ] || continue
+  [ -f "$cand/packages.adb" ] || continue
+  PDIR="${cand%/}"
+  break
+done
+if [ -z "$PDIR" ]; then
+  # 兜底：万一上游改了索引位置，就挑 .apk 最多的那一层
+  BEST=0
+  for cand in "$SRC"/bin/packages/*/; do
+    [ -d "$cand" ] || continue
+    case "$(basename "$cand")" in base|luci|routing) continue ;; esac
+    n="$(find "$cand" -name '*.apk' -type f 2>/dev/null | wc -l | tr -d ' ')"
+    [ "${n:-0}" -gt "$BEST" ] && { BEST="$n"; PDIR="${cand%/}"; }
+  done
+fi
+[ -n "$PDIR" ] || die "$SRC/bin/packages/ 下找不到包集目录（一个 .apk 都没有？）"
+ARCH="$(basename "$PDIR")"
+ok "包集目录: $ARCH  ($PDIR)"
 
 rm -rf "$OUT"; mkdir -p "$OUT"
 COLL=0
@@ -244,8 +278,12 @@ while IFS= read -r f; do
     cp -f "$f" "$OUT/$b"
   fi
 done < <(find "$PDIR" -name '*.apk' -type f | sort)
-CPCOUNT="$(ls -1 "$OUT"/*.apk 2>/dev/null | wc -l | tr -d ' ')"
-[ "$CPCOUNT" -gt 0 ] || die "一个 .apk 都没收到"
+# ⚠️ 这里**必须用 find，不能用 `ls -1 "$OUT"/*.apk`** ——
+#    空 glob 时 ls 返回**退出码 2**（GNU ls 行为），pipefail 会把它冒泡上来，
+#    脚本当场静默退出。坑 15 / Run #27 栽过一次，这里是同一个地雷的另一个副本。
+#    find 对「没找到」返回 0。
+CPCOUNT="$(find "$OUT" -maxdepth 1 -name '*.apk' -type f | wc -l | tr -d ' ')"
+[ "${CPCOUNT:-0}" -gt 0 ] || die "一个 .apk 都没收到"
 ok "收拢 $CPCOUNT 个 .apk（$ARCH）"
 [ "$COLL" -eq 0 ] || warn "$COLL 个重名文件内容不同，取了先遇到的那个"
 
@@ -319,7 +357,10 @@ for cand in \
   [ -d "$cand" ] && { KVER="$(basename "$cand" | sed 's/^linux-//')"; break; }
 done
 if [ -z "$KVER" ]; then
-  KVER="$(grep -rm1 -oE 'linux-[0-9]+\.[0-9]+\.[0-9]+' "$SRC/target/linux/mediatek/Makefile" 2>/dev/null | head -1 | sed 's/^linux-//')"
+  # ⚠️ 末尾的 `|| true` 不能省：grep 找不到会返回 1，pipefail 冒泡后
+  #    `set -e` 会当场掐死脚本，下面的 die 永远打不出来（Run #29 同款静默失败）。
+  KVER="$(grep -rm1 -oE 'linux-[0-9]+\.[0-9]+\.[0-9]+' "$SRC/target/linux/mediatek/Makefile" 2>/dev/null | head -1 | sed 's/^linux-//' || true)"
+  KVER="${KVER:-}"
 fi
 if [ -z "$KVER" ]; then
   die "探测不到内核版本号 —— 无法做 kmod 比对，拒绝发布（宁可不发也不发错的）"

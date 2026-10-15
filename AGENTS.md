@@ -286,9 +286,9 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 
 ---
 
-## 5. ⚠️ 完整坑位清单（18 个，全部静默失败）
+## 5. ⚠️ 完整坑位清单（19 个，全部静默失败）
 
-**这十八个坑的共同点：链路上没有任何一个环节会报错。**
+**这十九个坑的共同点：链路上没有任何一个环节会报错。**
 形态都是「编译成功 → CI 绿 → 守卫过 → 固件里东西是错的」。
 
 完整成因与解法见 `README.md` §13.2，这里只列速查：
@@ -313,10 +313,12 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 | 16 | **`tenda-preset` 漏装 wireless** | 坑 10 的漏网分支，固件里没 wireless | install 段补 `$(CP)` |
 | 17 | **`ip-full` 与 `ip-tiny` 同时 =y** | `package/install` 报 apk 冲突，**跑 160 分钟才挂** | `ip-tiny` 改 `=m` |
 | 18 | **ccache 配了整套却从未生效** | 每轮全冷编译，缓存保存报 "Path not exist" | `CONFIG_DEVEL=y`（CCACHE 的门控） |
+| 19 | **`set -e` 让守卫变死代码** | 脚本**静默退出**，连 die 的提示都不打 | 命令替换补 `\|\| true`；空 glob 用 `find` 不用 `ls` |
 
 > 坑 1~15 是 `main`（OpenWrt SNAPSHOT / 内核 6.18）线上踩的；
-> **坑 16~18 是 `immortalwrt-25.12`（内核 6.12）独有的**，成因不同，不要互相套用。
-> 其中坑 17/18 的根因都是同一类病：**上游 kconfig 的「不可见即被删」**。
+> **坑 16~19 是 `immortalwrt-25.12`（内核 6.12）独有的**，成因不同，不要互相套用。
+> 其中坑 17/18 的根因都是同一类病：**上游 kconfig 的「不可见即被删」**；
+> 坑 19 又是同一类病的第三形态：**`set -e` 下守卫写在失败命令之后等于没写**。
 
 
 ### 🔴 坑 9：uci batch 的段类型（2026-10-03 实机取证发现）
@@ -1085,6 +1087,88 @@ CI 的「配置 ccache」步骤补 `export CCACHE_DIR` + `mkdir -p`，
 
 ---
 
+### 坑 19：`set -e` 让守卫变死代码 → 脚本静默退出（2026-10-15 Run #29）
+
+**第一次触发自建源链路**，Run #29 就死在这。固件本身全绿（编译 / 体积守卫 /
+内容抽查全过），失败的是第 27 步「构建自建源」。
+
+#### 现场：最后两行日志，什么都没说
+
+```
+▸ 收集 .apk
+##[error]Process completed with exit code 1.
+```
+
+**连 `die` 的红字提示都没有。** 这是本项目最阴险的一类失败的典型长相。
+
+#### 两个原因叠在一起
+
+**① `CONFIG_TARGET_ARCH_PKGSET` 这个符号在 ImmortalWrt 25.12 里已经不存在了。**
+GitHub 代码搜索 `TARGET_ARCH_PKGSET repo:immortalwrt/immortalwrt` → **0 命中**。
+实测该分支的包目录叫 `aarch64_cortex-a53`，是别的东西推出来的。
+
+**② 但真正致命的是写法。** 原代码：
+
+```sh
+set -euo pipefail
+ARCH="$(grep -m1 '^CONFIG_TARGET_ARCH_PKGSET=' "$SRC/.config" | cut -d= -f2-)"
+[ -n "$ARCH" ] || die "读不出 CONFIG_TARGET_ARCH_PKGSET"
+```
+
+grep 找不到 → 返回 1 → `pipefail` 冒泡 → **赋值语句 `ARCH="$(…)"` 自己就失败了**
+→ `set -e` 当场终止脚本。
+**下面那行精心写好的 `|| die` 守卫根本没机会执行 —— 它是死代码。**
+
+> ### ⚠️ 这是本项目反复栽的同一类病，值得单独记住
+>
+> `set -euo pipefail` 下，**任何可能返回非 0 的命令替换都会在守卫生效之前掐死脚本**。
+> 同一个坑的不同变体：
+>
+> | 变体 | 症状 | 出现在 |
+> |---|---|---|
+> | `grep` 没匹配 → 1 | 静默退出，无提示 | `build-repo.sh` 收包（坑 19） |
+> | `ls` 空 glob → **2** | 同上 | `stamp.sh` 改名（Run #27 / 坑 15） |
+> | `unsquashfs` 解包成功但退出码非 0 | 抽查误报失败 | 坑 4 |
+>
+> **规律：守卫写在「可能失败的命令」之后是没用的**，因为命令自己就是失败点。
+> 正确写法二选一：
+>
+> ```sh
+> X="$(cmd || true)"; [ -n "$X" ] || die "..."     # 让命令先降级成"空"
+> X="$(cmd)"; [ -n "$X" ] || die "..."            # 或整条包在 if 条件里（set -e 不生效）
+> ```
+>
+> 另外 **`ls -1 "$DIR"/*.glob` 这种写法永远别用在「可能一个都匹配不到」的地方** ——
+> 用 `find`。GNU `ls` 对无匹配 glob 返回 2，是 GNU 行为，不是配置问题。
+
+#### 修法
+
+包集目录名不再从 kconfig 猜，**从磁盘发现**：`bin/packages/*/` 里
+**直接躺着 `packages.adb`（扁平总索引）**的那一层。feed 子目录
+（`base/` `luci/` `routing/`）只有更深一层的 `.apk`、没有顶层索引，自然被排除。
+另加一层兜底（挑 `.apk` 最多的目录），防止上游改索引位置。
+
+同一文件里另外两处同类地雷一并修掉：
+
+| 位置 | 原写法 | 改成 |
+|---|---|---|
+| 收包计数 | `ls -1 "$OUT"/*.apk \| wc -l` | `find "$OUT" -maxdepth 1 -name '*.apk' -type f \| wc -l` |
+| 内核号兜底 | `grep … \| head \| sed` | 末尾补 `\|\| true` |
+
+**验证**：`.sshhelper/test-build-repo-fix.sh` ——
+① 静态扫描确认脚本里已无裸的 `grep/ls/find` 命令替换；
+② 合成目录树（复刻真实的 `<arch>/packages.adb` + feed 子目录布局）确认
+发现逻辑选中正确目录、不误选 `base/luci/routing`；
+③ 对比验证 `ls` 写法**静默退出**、`find` 写法**正确走 die**。
+
+> ⚠️ 同一轮还暴露一个「绿灯证明不了任何事」的新例子：
+> 第 28 步「上传自建源产物」显示 **success**，但 artifact 列表里
+> **根本没有 `apk-repo-29`** —— 因为 `if-no-files-found: warn` 让它空跑过去了。
+> 而 `tenda-repo` 仓库自 2026-10-03 起就没再更新过：
+> **自建源至今一次都没真正发布成功过。**
+
+---
+
 ### 两条最容易重犯的
 
 **坑 8 的机制**（务必理解）：
@@ -1576,6 +1660,27 @@ grep -qx 'CONFIG_PACKAGE_ip-full=y' configs/base.config \
   && echo "❌ ip-full 和 ip-tiny 同时 =y —— apk 会在 package/install 报冲突（坑 17）"
 grep -qx 'CONFIG_PACKAGE_ip-tiny=m' configs/base.config \
   || echo "❌ ip-tiny 必须是 =m，不能依赖上游 defconfig 自动降级（坑 17）"
+
+# 17. set -e 下的静默退出（坑 19）
+# ⚠️ 判据：任何 `VAR="$(cmd)"` 形式的命令替换里，cmd 是 grep/ls 时，
+#    cmd 返回非 0 会让赋值本身失败 → set -e 掐死脚本 → 后面的 || die 成死代码。
+#    必须要么带 || true，要么整体放进 if 条件。
+# ⚠️⚠️ 判据本身必须**排掉注释行** —— 否则会扫到自己写的注释：
+#    build-repo.sh 里那段解释「原来为什么炸」的注释里就写着
+#    `ARCH="$(grep ...)"`，第一版守卫把它当违规报了红。
+if awk '/^[[:space:]]*#/ {next}
+         /[A-Z_]+="\$\((grep|ls)/ && !/\|\| true/ {print FILENAME":"FNR": "$0; bad=1}
+         END{exit bad}' scripts/*.sh; then
+  echo "  ok  没有会被 set -e 掐死的命令替换"
+else
+  echo "❌ 上列位置有裸的命令替换，守卫是死代码（坑 19）"
+fi
+# ls 空 glob 返回 2，是 Run #27 / 坑 15 的地雷，别在可能匹配不到的地方用
+grep -nE '^[[:space:]]*[^#].*ls -1 [^|]*\*\.[a-z]+.*\| *wc -l' scripts/*.sh \
+  && echo "❌ 还在用 ls 统计可能为空的 glob（坑 15 + 坑 19）"
+# 包集目录名不再从 kconfig 猜（CONFIG_TARGET_ARCH_PKGSET 在 25.12 已不存在）
+grep -nE '^[[:space:]]*[^#].*CONFIG_TARGET_ARCH_PKGSET' scripts/build-repo.sh \
+  && echo "❌ build-repo.sh 还在读 CONFIG_TARGET_ARCH_PKGSET（25.12 里 0 命中，坑 19）"
 ```
 
 > 第 4 条的裸凭据 grep **只查 `password=`**，查不到 `WIFI_KEY=`。
