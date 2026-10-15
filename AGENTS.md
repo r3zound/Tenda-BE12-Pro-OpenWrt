@@ -5,8 +5,13 @@
 > 本文件回答「现在什么状态、接下来干什么、哪些坑不能再踩」。
 > `README.md` 回答「这是什么、硬件细节、网络设计、刷机步骤」。
 >
-> 最后更新：2026-10-03 · 内容对应 `main` 分支当前状态
+> 最后更新：2026-10-15 · 内容对应 **`immortalwrt-25.12`** 分支 HEAD `d656b12`
 > （固件校验值见 §8，**只对标注了 Run 号的那一次有效**，换一次构建哈希就变）
+>
+> ⚠️ 2026-10-15 之前，本文件停在 2026-10-03、对应 `main` 分支。
+> 期间 `immortalwrt-25.12` 又修了坑 16/17/18，本次已补齐（§5）。
+> **`main` 与 `immortalwrt-25.12` 的内核不同（6.18 vs 6.12）、`.config` 不同、
+> 踩到的坑也不同** —— 读本文件时先确认自己在哪个分支。
 
 ---
 
@@ -16,25 +21,26 @@
 |----|----|
 | **项目** | 为 Tenda BE12 Pro（泰山 BE7200 Ultra）定制 OpenWrt 主路由固件 |
 | **仓库** | <https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt> |
-| **基线** | 官方 OpenWrt **mainline SNAPSHOT**，commit `3f26ab3d4d973fdbd3a1593a68e8186f5cc58dbd` |
+| **开发分支** | **`immortalwrt-25.12`**（= GitHub 默认分支）· `main` = OpenWrt SNAPSHOT 线，非默认 |
+| **基线** | **ImmortalWrt `openwrt-25.12`**，commit `313718c25f206cdeee399bdc6c002b7388c9a513`（锁 SHA，不锁分支名） |
 | **目标** | `mediatek/filogic` / `tenda_be12-pro`（MT7987A，512MB DDR4，128MB SPI-NAND） |
-| **当前状态** | ✅ 固件已构建并通过 24 项内容校验；✅ **Run #15 已于 2026-10-03 刷入设备**，上机验证进行中 |
-| **最新成功 CI** | [Run #15](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37094280125) · [Run #14](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37038515704) |
-| **编译耗时** | 82 分钟（GitHub Actions） |
-| **CI 触发** | 手动 `workflow_dispatch` / 推 tag / 每周定时。**⛔ 推 main 不再触发构建**（2026-10-03 起，见下） |
+| **当前状态** | ✅ 固件构建链路全绿（坑 1~18 全部修完）；⬜ **新固件尚未上机验证** |
+| **最新成功 CI** | [Run #28](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/38506029841)（`immortalwrt-25.12` / `d656b12`） |
+| **编译耗时** | 130.8 分钟（Run #28，**全冷编译** —— ccache 那一轮刚修完，见坑 18） |
+| **CI 触发** | 手动 `workflow_dispatch` / 推 tag / 每周定时。**⛔ 推分支不触发构建**（见下） |
 
-**一句话任务**：固件已经做好了，**接下来该做的是让用户刷上去并验证运行时**，
-而不是继续改构建体系。构建体系已经稳定（连续 2 次全绿）。
+**一句话任务**：构建体系已经稳定，**接下来该做的是上机验证 + 补齐凭据**，
+而不是继续改构建流程。
 
-> ### ⛔ 推 main 不再自动编译（2026-10-03 起）
+> ### ⛔ 推分支不自动编译（2026-10-03 起）
 >
-> `on.push` 里的 `branches: [main]` **已删除**。现在只有
+> `on.push` 里的分支触发**已删除**。现在只有
 > **手动 `workflow_dispatch`** / 打 `v*` tag / 每周一 cron 会构建。
 >
-> 原因：全量构建要 82~96 分钟，实测出现过纯文档提交
+> 原因：全量构建要 80~160 分钟，实测出现过纯文档提交
 > （`2dc401d` 只加了 AGENTS.md）白烧掉 96 分钟的情况。
 >
-> **改完代码先推 main，攒够一批再手动触发一次**。推 main 是安全的，不会自动开跑。
+> **改完代码先推分支，攒够一批再手动触发一次**。推分支是安全的，不会自动开跑。
 
 ---
 
@@ -130,42 +136,55 @@ config interface 'wan2'
 
 ```
 Tenda-BE12-Pro-OpenWrt/
-├── README.md                        1080+ 行，12 章 + §13 开发历程
+├── README.md                        本分支速览（ImmortalWrt 25.12 版）
 ├── AGENTS.md                        ⭐ 本文件
 ├── LICENSE                          MIT（构建脚本与配置）
-├── versions.lock                    ⭐ 所有上游组件的 commit 锁定（96 行）
+├── versions.lock                    ⭐ 所有上游组件的 commit 锁定（**分分支不同**）
 ├── .gitattributes                   强制 LF
 ├── .gitignore
 │
-├── configs/base.config              .config 片段（120 行）
-├── package/tenda-preset/            ⭐ 预置配置包（90 行 Makefile + files/）
+├── configs/base.config              .config 片段
+├── package/tenda-preset/            ⭐ 预置配置包（Makefile + files/）
 ├── files/                           预置文件「源」，需手动同步到 package/tenda-preset/files/
-├── docs/                            调试留档（dts.txt / fl.mk / nw.txt / prof.json）
+├── patches/immortalwrt-25.12/       ⭐⭐ 本分支独有：tenda_be12-pro 板级移植三件套
+├── docs/                            调试留档 + HANDOVER-MIGRATION.md（换机交接）
 │
 ├── scripts/
-│   ├── gen-feeds.sh                 227 行 — 生成 feeds.conf
-│   ├── gen-config.sh                71 行  — 生成 .config
-│   ├── build.sh                     212 行 — 本地一键构建
-│   ├── fetch-extra-packages.sh      165 行 — ⭐ 挂载「根 Makefile」仓库
-│   ├── size-guard.sh                163 行 — ⭐ 体积守卫
-│   ├── verify-firmware.sh           215 行 — ⭐⭐ 固件内容抽查
-│   └── lib/ensure-unsquashfs.sh      89 行 — 三级兜底获取 unsquashfs
+│   ├── gen-feeds.sh                 — 生成 feeds.conf
+│   ├── gen-config.sh                — 生成 .config
+│   ├── build.sh                     — 本地一键构建
+│   ├── apply-board-port.sh          — ⭐ 本分支独有：把板级补丁打进 OpenWrt 树（幂等）
+│   ├── build-stamp.sh               — ⭐ 算构建时间戳（北京时间）
+│   ├── stamp-firmware.sh            — ⭐ 给固件文件名加时间戳
+│   ├── fetch-extra-packages.sh      — 挂载「根 Makefile」仓库（LuCI 主题）
+│   ├── fetch-proxy-packages.sh      — 挂载自建源面板（13 个仓库，见 versions.lock）
+│   ├── build-repo.sh                — ⭐ 构建自建 apk 源产物
+│   ├── publish-repo.sh              — ⭐ 发布自建源到 tenda-repo（Pages）
+│   ├── size-guard.sh                — ⭐ 体积守卫
+│   ├── verify-firmware.sh           — ⭐⭐ 固件内容抽查
+│   └── lib/
+│       ├── ensure-unsquashfs.sh     — 三级兜底获取 unsquashfs
+│       └── stamp.sh                 — ⭐ find_sysupgrade_bin / build_version 等公共函数
 │
-└── .github/workflows/build.yml      316 行 — CI（22 步）
+└── .github/workflows/build.yml      — CI
 ```
 
 ### 各文件职责与注意事项
 
 | 文件 | 职责 | ⚠️ 改它时注意 |
 |------|------|-------------|
-| `versions.lock` | 上游 commit 锁定 | 唯一真源。`gen-feeds.sh` 和 `fetch-extra-packages.sh` 都从这读 |
-| `configs/base.config` | kconfig 片段 | **不要手工改 `.config`**，改这里后跑 `gen-config.sh` || `files/` | 预置文件源 | 改完**必须**同步到 `package/tenda-preset/files/`，否则不生效 |
-| `package/tenda-preset/Makefile` | 预置配置包 | 只直接装 `/etc/config/network`；其余走 `uci batch`（见 §5 坑 3） |
-| `files/etc/config/network` | 双 WAN 接口划分 | **唯一**随包安装的配置文件 |
+| `versions.lock` | 上游 commit 锁定 | 唯一真源。**两个分支不是同一套源，别搞混** |
+| `configs/base.config` | kconfig 片段 | **不要手工改 `.config`**，改这里后跑 `gen-config.sh` |
+| `files/` | 预置文件源 | 改完**必须**同步到 `package/tenda-preset/files/`，否则不生效 |
+| `package/tenda-preset/Makefile` | 预置配置包 | `$(CP)` 只对**无 apk 归属**的文件安全；`dhcp`/`dropbear`/`firewall`/`luci` 必须绕开走 `uci batch`（§5 坑 3 + 坑 16） |
+| `files/etc/config/network` | 双 WAN 接口划分 | 随包 `$(CP)` 安装 |
+| `files/etc/config/wireless` | 无线预置 | **无归属，可安全 `$(CP)`**；漏掉这条就是坑 16 |
 | `files/etc/uci-defaults/99-tenda-custom` | 首启脚本 | 见 §6 heredoc 陷阱；防火墙 zone 用动态索引；`switch_mirror` 默认源必须 USTC（见 §5 坑 12） |
+| `patches/immortalwrt-25.12/` | 板级移植 | `tenda-mkdualimageheader` **不能改也不能删** —— 原厂 bootloader 靠它认镜像 |
+| `scripts/lib/stamp.sh` | 公共函数 | 所有「定位固件文件」的地方走 `find_sysupgrade_bin`，别写死名字（坑 15） |
 | `scripts/gen-feeds.sh` | feeds.conf 生成 | ⚠️ 无引号 heredoc 内**禁用反引号和裸 `#`** |
-| `scripts/verify-firmware.sh` | 内容抽查 | 用 `grep -qF`（固定串），**别用 `grep -q`** |
-| `.github/workflows/build.yml` | CI | ⚠️ 步骤 9 和 11 各有一行不能删（见 §5 坑 7、8） |
+| `scripts/verify-firmware.sh` | 内容抽查 | 用 `grep -qF`（固定串）；**正则一律单引号**（坑 16） |
+| `.github/workflows/build.yml` | CI | ⚠️ 多行命令不能删（见 §5 坑 7、8）；ccache 段的 `key:` 不能用 `run_id`（坑 18） |
 
 ---
 
@@ -267,9 +286,9 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 
 ---
 
-## 5. ⚠️ 完整坑位清单（13 个，全部静默失败）
+## 5. ⚠️ 完整坑位清单（18 个，全部静默失败）
 
-**这十三个坑的共同点：链路上没有任何一个环节会报错。**
+**这十八个坑的共同点：链路上没有任何一个环节会报错。**
 形态都是「编译成功 → CI 绿 → 守卫过 → 固件里东西是错的」。
 
 完整成因与解法见 `README.md` §13.2，这里只列速查：
@@ -285,6 +304,20 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 | 7 | `rm -rf files` 删了构建素材 | make 到 install 才炸 | 删掉那行 |
 | 8 | 误删 `feeds install -a -p luci` | 整个 LuCI 消失 | 恢复该行 |
 | 9 | **uci batch 把段类型写坏** | **刷完 LAN 客户端拿不到 IP** | **`set <包>.<段>=<值>` 是赋类型，必须写 `'dhcp'`** |
+| 10 | 无线配置不在固件里 → `uci set` 造伪段 | 设备以**无密码开放网络**上线 | 预置 `files/etc/config/wireless` |
+| 11 | `uci set` 建不出段 | LuCI 主题下拉框完全空白 | 预置 `luci.main.mediaurlbase` 等段 |
+| 12 | 软件源指向没有 snapshots 的镜像站 | 一个包装不上 | 默认源必须 USTC |
+| 13 | 流量卸载让 mwan3 负载均衡静默失效 | 第二条 WAN 永远没流量 | 显式关掉 flow offload |
+| 14 | 本机构建的固件装不了任何内核模块 | kmod 全部「未提供」 | 首启 `add_kmods_feed()` 补源 |
+| 15 | 固件文件名加后缀 | 三个脚本静默跳过/误报失败 | 统一走 `find_sysupgrade_bin()` |
+| 16 | **`tenda-preset` 漏装 wireless** | 坑 10 的漏网分支，固件里没 wireless | install 段补 `$(CP)` |
+| 17 | **`ip-full` 与 `ip-tiny` 同时 =y** | `package/install` 报 apk 冲突，**跑 160 分钟才挂** | `ip-tiny` 改 `=m` |
+| 18 | **ccache 配了整套却从未生效** | 每轮全冷编译，缓存保存报 "Path not exist" | `CONFIG_DEVEL=y`（CCACHE 的门控） |
+
+> 坑 1~15 是 `main`（OpenWrt SNAPSHOT / 内核 6.18）线上踩的；
+> **坑 16~18 是 `immortalwrt-25.12`（内核 6.12）独有的**，成因不同，不要互相套用。
+> 其中坑 17/18 的根因都是同一类病：**上游 kconfig 的「不可见即被删」**。
+
 
 ### 🔴 坑 9：uci batch 的段类型（2026-10-03 实机取证发现）
 
@@ -857,6 +890,157 @@ CI 里由 `scripts/build-stamp.sh` 算好后经 `$GITHUB_ENV` 传给后续所有
 **全程必须同一个值**，否则会出现「版本串写 00:31、文件名写 00:32」这种没法排查的错。
 
 
+### 坑 16：`tenda-preset` 漏装 wireless → 坑 10 的漏网分支（2026-10-13）
+
+`a2368a9` · 两个互相独立的 bug，都表现为「固件内容抽查失败」。
+
+**【真 bug】install 段只 CP 了 network，`files/etc/config/wireless` 永远进不了固件。**
+
+下载 Run #24 固件解包确认：`/etc/config/` 下 12 个文件，**没有 wireless**。
+而 `verify-firmware.sh` 早就有一条检查在盯着它 —— 也就是说这条检查一直是对的，
+是**产物没跟上**。
+
+> 顺带纠正一个认知：**无线预置不是「写了就有」的**。
+> 坑 10 修的是「文件在仓库里但首启脚本造伪段」，坑 16 是**文件压根没被打包**。
+> 同一个终态（设备以开放网络上线），两条完全不同的因果链。
+
+能不能直接 `$(CP)` 由 apk 文件归属决定，**不是猜的**（逐项查过 apk 数据库）：
+
+| 文件 | 归属 | 结论 |
+|---|---|---|
+| `/etc/config/wireless` | **无归属** | 与 `network` 同类，可安全 `$(CP)` |
+| `/etc/config/network` | `tenda-preset` | 可 `$(CP)` |
+| `/etc/config/dhcp` | `dnsmasq` | ⛔ 有归属，必须绕开走 `uci batch`（否则触发坑 3） |
+| `/etc/config/dropbear` | `dropbear` | ⛔ 同上 |
+| `/etc/config/firewall` | `firewall4` | ⛔ 同上 |
+| `/etc/config/luci` | `luci-base` | ⛔ 同上 |
+
+**【假 bug】`verify-firmware.sh` 的「默认源必须是 USTC」检查永远不可能通过。**
+
+那行正则写在**双引号**里，`\$` 被 bash 退化成裸 `$`，而 `grep -E` 里裸 `$`
+是**行尾锚点** → 实际在找「行尾紧跟 `{」，必然不匹配。固件里那行其实完全正确：
+
+```sh
+local mirror="${TENDA_MIRROR:-https://mirrors.ustc.edu.cn/openwrt}"   # od -c 实测逐字节正确
+```
+
+改成单引号 `'...\$\{TENDA_MIRROR...'` 即通过。这是典型的**「修好了也过不了」**死锁。
+全量扫过 `scripts/` 下 19 个脚本，**只此一处**（同文件 L442 用 `\\\$`、L470 用单引号都没问题）。
+
+> **教训：写正则给 grep 用，一律用单引号。**
+> 双引号里 `\$` → `$`、`\d` → `d`、`\|` → `|`，三类转义都会静默失效。
+
+验证：`.sshhelper/verify-full-in-wsl.sh`（拿 Run #24 固件在 WSL 跑完整抽查，
+USTC 那条由 ❌ 变 ✅，而 wireless 那条**仍 ❌** —— 正确，该固件是修复前编的，
+这同时证明这条检查是真检查）、`verify-wireless-willpass.sh`（10/10 通过）。
+
+---
+
+### 坑 17：`ip-full` 与 `ip-tiny` 同时 `=y` → 跑满 160 分钟才炸（2026-10-13）
+
+`ac507aa` · Run #25 在第 19 步「编译固件」失败，`make` 退出码 2，**跑了 160 分钟**。
+
+```
+ERROR: unable to select packages:
+  ip-full-6.18.0-r2:
+    conflicts: ip-tiny-6.18.0-r2[ip=6.18.0-r2]
+    satisfies: world[ip-full]
+  ip-tiny-6.18.0-r2:
+    conflicts: ip-full-6.18.0-r2[ip=6.18.0-r2]
+    satisfies: world[ip-tiny]
+make[2]: *** [package/Makefile:100: package/install] Error 2
+```
+
+两个包**同时 provides 虚拟包 `ip` 且互斥**，却都进了 `world`。
+`satisfies: world[...]` 是关键 —— 说明是 `.config` 里**显式选中**的，不是被依赖拉进来的。
+
+**根因**：`configs/base.config` 里同时写着 `CONFIG_PACKAGE_ip-full=y` 和
+`CONFIG_PACKAGE_ip-tiny=y`。
+
+**为什么 `main` 从来没炸过**：这份 `base.config` 两个分支一模一样，但上游 defconfig 脾气不同：
+
+| 分支 | defconfig 行为 | 实测 |
+|---|---|---|
+| OpenWrt SNAPSHOT（`main`） | **自动降级** `ip-tiny` → `=m` | Run #24 的 `config.buildinfo` 里确实是 `ip-tiny=m`，同轮固件 apk 库里只有 `ip-full` |
+| ImmortalWrt 25.12（本分支） | **不降级**，两个都留 `=y` | apk 解析阶段直接报冲突 |
+
+**修法**：`ip-tiny` 显式改 `=m`，不再依赖上游 defconfig 的脾气。
+
+保留这一行而不是删掉：ip-tiny 仍会被编译出来（万一有包按名字依赖它），只是不装进 rootfs。
+ip-full 是 ip-tiny 的超集，功能只多不少。
+
+> **教训：依赖「上游会自动降级」是跨分支最脆的假设。**
+> 同一份配置在两个上游下行为不同，且**都不报错**，只在 apk 解析那一刻炸。
+> 能显式写死的就显式写死。
+
+---
+
+### 坑 18：ccache 配了整套却从未生效（2026-10-14）
+
+`5fef31a`（启用）+ `d656b12`（找到根因）。**分两步才对，中间还漏了一次。**
+
+#### 第一步的错：以为「配了设施就等于启用了」
+
+`build.yml` 里 ccache 一整套都在（装 ccache、`ccache -M 5G`、恢复缓存、上传缓存），
+但 **`.config` 里从没开过 `CONFIG_CCACHE`** —— OpenWrt 的 make 根本不会用 ccache
+包装编译器，`~/.ccache` 从头到尾是空的，于是保存时报：
+
+```
+[warning] Path Validation Error: Path(s) specified in the action for caching do(es) not exist
+[warning] Cache save failed.
+```
+
+结果：每轮都是**全冷编译**（工具链 gcc 自举 + 内核 + 所有包从头编），Run #25 实测 160 分钟。
+
+> ⚠️ **上面这个 warning 不会让步骤变红。** Run #28 的缓存保存步骤在 API 上显示
+> `conclusion=success`，但**步骤绿 ≠ 缓存真存下来了**。
+> 判断依据只能是 `~/.ccache` 里有没有真数据（见下方残留项）。
+
+#### 第二步找到的根因：`CONFIG_CCACHE` 被 `if DEVEL` 门控
+
+加了 `CONFIG_CCACHE=y` 之后，Run #27 保存缓存**仍然**报 "Path not exist"。
+
+`config/Config-devel.in` 里：
+
+```kconfig
+menuconfig DEVEL
+  config CCACHE
+    bool "Use ccache" if DEVEL
+```
+
+`CCACHE` 在 `DEVEL` 菜单块**内**，而 `base.config` 里写的是 `CONFIG_DEVEL=n`。
+`DEVEL=n` → `CCACHE` **不可见** → `make defconfig` 把它**静默删掉**，
+`.config` 里变成 `# CONFIG_CCACHE is not set`。**日志一切正常。**
+
+**修法**：`CONFIG_DEVEL=n` 改成 `=y`。`DEVEL` 只是开发者选项的可见性开关，
+不强制打开里面的子选项（`BROKEN` / `DOWNLOAD_TOOL` 等默认仍是 `n`），无副作用。
+
+> 这与坑 15 的 `CONFIG_VERSION_CODE` 被 `if IMAGEOPT` 吃掉、
+> 以及坑 17 的 `ip-tiny` 被 defconfig 降级，是**同一类病的第三个实例**：
+> **kconfig 里「不可见的选项 = 被删除」，而 kconfig 从不告诉你它删了什么。**
+
+#### 缓存 key 也改了
+
+原来两处都是 `ccache-${{ github.run_id }}` —— `run_id` 每次都不同，
+**精确命中永远失败**，只能靠 `restore-keys` 兜底。改成：
+
+```yaml
+key: ccache-${{ hashFiles('versions.lock', 'configs/base.config') }}
+```
+
+上游版本 / 配置没变 → 精确命中；变了 → 兜底恢复 + 重新填。
+
+#### ⬜ 残留未验证
+
+Run #28 首次真正填上缓存，**提速幅度要等下一轮才能量化**。
+跨分支内核不同（SNAPSHOT 6.18 vs ImmortalWrt 6.12）会让 target 侧 kmod 缓存不命中，
+但 **host 工具链命中不受影响**，而那正是最耗时的一段。
+
+**验证判据**：下一轮构建日志里应出现 `ccache: aarch64-...gcc` 之类的调用行，
+且保存缓存步骤**不再**出现 "Path ... do(es) not exist"。两条都要满足才算修好。
+
+---
+
 ### 两条最容易重犯的
 
 **坑 8 的机制**（务必理解）：
@@ -942,9 +1126,31 @@ ref 语法：分支用 `;`，commit 用 `^`。
 
 ## 7. 当前待办
 
-### 7.1 优先级最高：上机验证
+### 7.1 优先级最高：补凭据（🔴 阻塞自建源）
 
-**固件已经构建并校验完毕，接下来该做的是让用户刷上去。** 构建体系本身已稳定。
+| # | 事项 | 状态 | 谁做 |
+|---|---|---|---|
+| 1 | 🔴 把 `private-key.pem` 配成 Actions secret **`TENDO_REPO_PRIVATE_KEY`** | **未配** | 用户（GitHub 网页） |
+| 2 | 🔴 配一个 GitHub PAT（`repo` + `workflow`） | 本机没有 | 用户 |
+
+**第 1 条不配的后果**：CI 会走 OpenWrt 自动生成的一次性 EC 密钥 ——
+固件能用，但 **`build.yml` 里自建源那一整段（签名 / build-repo / 发布 / 上传 apk-repo）
+全部 `if: have_key == 'true'` 跳过**。是硬逻辑，不会拿一次性密钥凑数。
+
+**第 2 条不配的后果**：无法推送、无法拉 Actions 构建日志（日志接口需认证，实测 403）。
+
+> ⚠️ `git push` 卡住不动通常不是网络问题，是 **Git Credential Manager 在等授权弹窗**。
+> 绕开：`git -c credential.helper= push https://<TOKEN>@github.com/r3zound/Tenda-BE12-Pro-OpenWrt.git <branch>`
+
+### 7.2 其次：验证坑 18 的 ccache 是否真的生效
+
+Run #28 首次填上缓存，但**提速幅度尚未量化**，且**保存步骤是否真落盘未验证**
+（该步骤在 API 上显示 `success`，但缓存缺失只报 warning、不让步骤变红）。
+需要拉 Run #28 的完整日志核对，判据见 **§5 坑 18「残留未验证」**。
+
+### 7.3 优先级最高（并行）：上机验证
+
+**固件构建链路已全绿，接下来该做的是让用户刷上去。** 构建体系本身已稳定（坑 1~18 全修）。
 
 给用户的刷机要点（详见 `README.md` §7、§4.9）：
 
@@ -966,10 +1172,13 @@ ref 语法：分支用 `;`，commit 用 `^`。
 | `lan3` | 1G | **WAN2**（移动 300M，PPPoE，单层 NAT） |
 | `lan4` `lan5` | 1G | LAN |
 
+⚠️ 刷完**不要用 `/etc/init.d/network restart`** —— AN8855 交换芯片对它支持不良，
+会导致 LAN 口失联、必须断电。一律用 `reload_config`（增量生效）。
+
 刷完后请用户提供：`sysupgrade` 输出 + `logread | grep tenda-custom`，
 以便确认 mwan3 与双 WAN 的实际状态。
 
-### 7.2 上机后待验证项
+### 7.4 上机后待验证项
 
 见 `README.md` §10「部署时需实测记录」：
 
@@ -983,7 +1192,7 @@ ref 语法：分支用 `;`，commit 用 `^`。
       `uci get luci.main.mediaurlbase` = `/luci-static/aurora`
       —— 见 **§5 坑 11**，这条曾经长期为空
 
-### 7.3 可选优化（不是当前重点）
+### 7.5 可选优化（不是当前重点）
 
 - 精简包体积（当前 rootfs 13MB，`rootfs_data` 剩 73MB，很宽裕，暂无必要）
 - 恢复 PassWall（需重新评估体积，方案见 `README.md` §4.6）
@@ -993,18 +1202,38 @@ ref 语法：分支用 `;`，commit 用 `^`。
 
 ## 8. 已交付的固件
 
+### 8.1 当前分支 `immortalwrt-25.12`
+
+| 项 | 值 |
+|----|----|
+| CI Run | [#28](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/38506029841)（2026-10-14，success） |
+| 提交 | `d656b12` |
+| 编译耗时 | 130.8 分钟（全冷编译，ccache 那轮刚修完，见坑 18） |
+| 基线 | ImmortalWrt `openwrt-25.12` @ `313718c25f206cdeee399bdc6c002b7388c9a513` |
+| 内核 | **6.12**（`main` 分支是 6.18，两者 rootfs 结构不同，**固件不要混刷**） |
+| 固件 SHA256 | ⬜ **未记录** —— 需从 Run #28 artifact 下载后用 `sha256sums` 核对补录 |
+| Artifact | `tenda_be12-pro-immortalwrt-25.12-28`，保留 90 天 |
+
+> ⚠️ Run #28 的产物**只存在于 Actions Artifact**，仓库不分发固件二进制。
+> 补录校验值前，先确认设备上跑的到底是哪一版：
+> `cat /etc/openwrt_version`（应形如 `r1-<hash>-20261014.XXXX`）。
+
+### 8.2 历史（`main` 分支，OpenWrt SNAPSHOT / 内核 6.18）
+
+以下为 2026-10-03 时期的数据，**仅供追溯**，不代表当前状态：
+
 | 项 | 值 |
 |----|----|
 | CI Run | [#15](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37094280125) · [#14](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/37038515704) |
 | 提交 | `2dc401d` / `c6caa27` |
 | 编译耗时 | 82 分钟（#15 为 96 分钟，含等缓存） |
 | sysupgrade | 19,149,065 字节 |
-| sysupgrade SHA256（**Run #15**） | `80e9b9e3cc50447eba47beb5e0bf2c62b6a24df59b7948d4f0055ed52a61de9b` |
-| initramfs SHA256（**Run #15**） | `75d2c51dbb314c4df10d447093a8da094e149c13bc201714c993142750dae037` |
+| sysupgrade SHA256（Run #15） | `80e9b9e3cc50447eba47beb5e0bf2c62b6a24df59b7948d4f0055ed52a61de9b` |
+| initramfs SHA256（Run #15） | `75d2c51dbb314c4df10d447093a8da094e149c13bc201714c993142750dae037` |
 | sysupgrade SHA256（Run #14） | `c74cae8719dee983657cce0ef074d03469b581e34234de0e03425b2a100c6120` |
 | initramfs SHA256（Run #14） | `e3de2ee5ba2dcb12b57654a26e565d1f9de24a5a602797041142d63a24e81b83` |
 | OpenWrt 基线 | `3f26ab3d4d973fdbd3a1593a68e8186f5cc58dbd` |
-| 内核 | 6.18.54（用户当前 ImmortalWrt 是 6.18.52） |
+| 内核 | 6.18.54 |
 | rootfs（squashfs） | 13 MB |
 | 展开体积 | 40 MB / 1411 个文件 |
 | rootfs_data | **73 MB** ← 插件空间 |
@@ -1021,9 +1250,25 @@ ref 语法：分支用 `;`，commit 用 `^`。
 | 项 | 值 |
 |----|----|
 | 仓库 | `r3zound/Tenda-BE12-Pro-OpenWrt`（**公开**） |
-| 默认分支 | `main` |
+| **默认分支** | **`immortalwrt-25.12`**（`origin/HEAD` 指向它；`main` 是非默认的 SNAPSHOT 线） |
 | CI workflow | `.github/workflows/build.yml` |
 | Artifact 保留 | 90 天 |
+| Actions secret | `TENDO_REPO_PRIVATE_KEY` —— 🔴 **当前未配置**，见 §7.1 |
+
+**自建 apk 源与私钥**（本项目最硬的资产，**丢了不可再生**）：
+
+- 私钥 `.repo-keys/private-key.pem`（2524 字节）**只存在 GitHub Actions secret 里，不入仓库**
+- 公钥 `keys/public-key.pem` **已进仓库**（设备靠它信任自建源，是整个方案的安全锚点）
+- 校验私钥：`openssl rsa -in private-key.pem -noout -check` → 期望 `RSA key ok`
+- 校验密钥对匹配（两个哈希必须相同）：
+  ```sh
+  openssl pkey -in private-key.pem -pubout -outform DER 2>/dev/null | sha256sum
+  openssl pkey -pubin -in keys/public-key.pem -outform DER 2>/dev/null | sha256sum
+  ```
+  实测（2026-10-15 换机后复核）：两者均为
+  `74ea4b938d1c9496692e2b457ecc7e24910fe64da2680b80c0a2bff43c3aab7b`
+- ⚠️ **这条校验必须在 Git Bash 里跑**。PowerShell 5.1 的管道会把二进制 DER
+  转成文本再编码，**算出的哈希必然不同**（实测得到 `04e6d34f...`），是假警报。
 
 **凭据策略**：
 
@@ -1071,8 +1316,24 @@ cd - >/dev/null && ./scripts/gen-feeds.sh /tmp/fakeowrt
 diff -r files package/tenda-preset/files && echo "✅ 已同步"
 
 # 4. 没有裸凭据
-grep -rInE "password[[:space:]]*=[[:space:]]*['\"][^'\"]+" \
-     --include='*' . | grep -v '^\./\.git/' | grep -v "password ''"
+# ⚠️ 这条判据修过两次，两个坑都很隐蔽：
+#
+#   (a) 只写 `password='xxx'` 会**漏掉最危险的一半** ——
+#       UCI 配置文件里的真实写法是 `option password 'xxx'`（空格分隔、没有等号），
+#       而真实 PPPoE 凭据最可能就藏在 files/etc/config/network 里那个位置。
+#       正则里的 `(=[[:space:]]*)?` 就是为了同时吃下两种语法。
+#
+#   (b) 取值里不能含 | 和空白 —— 否则 `grep '^password=' | head -1` 这种
+#       **读取**密码的命令会跨引号匹配到后面的管道和参数，被误报成裸凭据。
+#
+#   (c) 要排掉三类「看着像密码但不是」：注释行、空值、中文占位符
+#       （`'你的移动宽带密码'` / `'密码'` 是给用户看的填写说明，必须保留）。
+grep -rInE "password[[:space:]]*(=[[:space:]]*)?['\"][^'\"|[:space:]]{3,}['\"]" \
+     --include='*' . | grep -v '^\./\.git/' \
+  | grep -vE "^[^:]+:[0-9]+:[[:space:]]*#" \
+  | grep -vE "password[[:space:]]*(=[[:space:]]*)?['\"]{2}" \
+  | grep -vE "['\"][^'\"]*(密码|你的|待填|xxx|XXX|placeholder)[^'\"]*['\"]" \
+  && echo "❌ 有裸凭据（见上）"
 
 # 5. 预置文件里没有危险命令（network restart 会让本机 LAN 失联）
 grep -rn "/etc/init.d/network restart" files/ package/ && echo "❌ 见上面"
@@ -1220,6 +1481,46 @@ sf=$(grep -n 'name: 生成 feeds.conf' .github/workflows/build.yml | cut -d: -f1
 
 # 13. 用旧固件反测抽查脚本（应当精确报出该固件缺什么）
 ./scripts/verify-firmware.sh <含 bin/targets/mediatek/filogic/ 的目录>
+
+# 14. 预置包没漏装文件（坑 16）
+# tenda-preset 的 install 段必须 CP 到 wireless —— 漏了固件里就没有它，
+# 坑 10 的「造伪段 → 开放网络」会原样复现。
+grep -qE '\$\(CP\).*etc/config/wireless' package/tenda-preset/Makefile \
+  || echo "❌ tenda-preset 没装 /etc/config/wireless（坑 16）"
+# 仍然不能 CP 的是有归属的那几个（坑 3），误加会触发 apk 归属冲突
+for f in dhcp dropbear firewall luci; do
+  grep -qE "\\\$\\\(CP\\\).*etc/config/$f" package/tenda-preset/Makefile \
+    && echo "❌ 不能 CP $f：它有包归属，必须走 uci batch（坑 3 + 坑 16）"
+done
+
+# 15. grep 的正则一律用单引号（坑 16 的「假 bug」）
+# 双引号里 \$ \d \| 会被 bash 退化，正则语义静默改变。
+# ⚠️ 判据必须限定在**喂给 grep 的那一行**上 —— 否则会误报：
+#    size-guard.sh:75 的 `echo "先执行完整构建: make -j\$(nproc)"`
+#    是给人看的提示串，里面的 \$( 是有意转义的，不是正则。
+grep -rnE 'grep[^|]*"[^"]*\\\$[{(]' scripts/ \
+  && echo "❌ grep 正则写在双引号里，\$ 会被退化成行尾锚点（坑 16）"
+
+# 16. ccache 与互斥包配置（坑 17 / 坑 18）
+# CCACHE 在 `if DEVEL` 菜单块内，DEVEL=n 会让它被 defconfig 静默删掉，
+# 而缓存保存只报 warning、步骤照样绿 —— 绿灯证明不了任何事
+grep -qx 'CONFIG_DEVEL=y' configs/base.config \
+  || echo "❌ CONFIG_DEVEL 不是 y —— CONFIG_CCACHE 会被 defconfig 删掉（坑 18）"
+grep -qx 'CONFIG_CCACHE=y' configs/base.config \
+  || echo "❌ 没开 CONFIG_CCACHE —— 装了 ccache 也只是摆设（坑 18）"
+# 缓存 key 用 run_id 的话每次都不命中。
+# ⚠️ 只查 `key:` 行 —— github.run_id 在 buildinfo / Release 正文里是正常用途，
+#    全文件 grep 会误报。
+grep -nE '^\s*key:.*github\.run_id' .github/workflows/build.yml \
+  && echo "❌ ccache key 用了 run_id，精确命中永远失败（坑 18）"
+grep -q "hashFiles('versions.lock', 'configs/base.config')" .github/workflows/build.yml \
+  || echo "❌ ccache key 没有基于 versions.lock + base.config 的内容 hash（坑 18）"
+# ip-full / ip-tiny 同时 provides 虚拟包 ip 且互斥
+grep -qx 'CONFIG_PACKAGE_ip-full=y' configs/base.config \
+  && grep -qx 'CONFIG_PACKAGE_ip-tiny=y' configs/base.config \
+  && echo "❌ ip-full 和 ip-tiny 同时 =y —— apk 会在 package/install 报冲突（坑 17）"
+grep -qx 'CONFIG_PACKAGE_ip-tiny=m' configs/base.config \
+  || echo "❌ ip-tiny 必须是 =m，不能依赖上游 defconfig 自动降级（坑 17）"
 ```
 
 > 第 4 条的裸凭据 grep **只查 `password=`**，查不到 `WIFI_KEY=`。
@@ -1248,4 +1549,19 @@ sf=$(grep -n 'name: 生成 feeds.conf' .github/workflows/build.yml | cut -d: -f1
   → 参见坑 15；`size-guard.sh` 找不到文件会静默跳过体积检查，
   `verify-firmware.sh` 找不到会直接 exit 2 让八十多分钟的构建白跑。
   凡是「定位固件文件」的地方一律走 `find_sysupgrade_bin`，不要写死名字
+- 改了 `tenda-preset` 的 install 段，**只想着加 CP、忘了先查 apk 归属**
+  → 参见坑 16；`/etc/config/dhcp` / `dropbear` / `firewall` / `luci` 有包归属，
+  CP 过去会触发坑 3 的 apk 冲突，必须继续走 `uci batch`。
+  `wireless` 恰好**无归属**，才可以安全 CP
+- 给 grep 写正则时用了**双引号**
+  → 参见坑 16；`\$` 会被 bash 退化成裸 `$`（行尾锚点）、`\d` → `d`、`\|` → `|`。
+  症状是「明明修好了还是过不了」，而且 grep 退出码告诉你一切正常
+- 觉得「CI 里配了 ccache 就等于启用了」
+  → 参见坑 18；`CONFIG_CCACHE` 在 `if DEVEL` 菜单块内，`DEVEL=n` 时被
+  defconfig 静默删除。**缓存保存失败只报 warning、步骤照样绿**，
+  绿灯证明不了缓存存下来了，要看日志里有没有 `ccache: ...gcc` 调用行
+- 依赖「上游 defconfig 会自动降级互斥包」
+  → 参见坑 17；`main` 分支的 SNAPSHOT 会把 `ip-tiny` 降成 `=m`，
+  ImmortalWrt 25.12 **不降级**，两个都是 `=y` 时 apk 直接报冲突，
+  **而且要跑满 160 分钟才炸**。能显式写死的就显式写死
 

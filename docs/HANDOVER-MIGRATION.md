@@ -2,9 +2,20 @@
 
 > 读者：把这台机器换掉之后、拿到这份文档的人或 agent。
 >
-> 写作时间：2026-10-04（北京时间）
-> 代码状态：分支 `immortalwrt-25.12`，HEAD `d9cc194`（本文件随该提交入库），工作树干净，已推送
+> 写作时间：2026-10-04（北京时间）· **最近更新：2026-10-15**
+> 代码状态：分支 `immortalwrt-25.12`，HEAD `d656b12`（本文件随该提交入库），工作树干净，已推送
 > 设备状态：Tenda BE12 Pro 刷的是 Run #18 产物 `cb5c51a`，内核 6.18.54
+>             （⚠️ 设备上仍是旧固件，**Run #28 / 内核 6.12 那一版尚未上机**）
+>
+> ### 两次换机，路径不一样
+>
+> | 次 | 时间 | 项目根上级目录 |
+> |---|---|---|
+> | 第一次 | 2026-10-04 | `D:\OneDrive\User\Network\Router\tenda_be12-pro\` |
+> | **第二次（当前）** | 2026-10-15 | `C:\Users\LG\workspace\minimax\Tenda-BE12-Pro-OpenWrt\` |
+>
+> 本文里凡是写死 `D:\OneDrive\...` 的命令，**当前机器上一律要改成上表第二个路径**。
+> 仓库内没有写死绝对路径的地方，只有 `.sshhelper/` 下的本机脚本里有（已随迁移包替换）。
 
 ---
 
@@ -40,7 +51,9 @@ GitHub 上没有、CI secret 里也还没配（用户一直没操作）。丢了
 
 | 项 | 值 |
 |---|---|
-| 本机路径 | `D:\OneDrive\User\Network\Router\tenda_be12-pro\.repo-keys\private-key.pem` |
+| 本机路径 | `<项目根上级目录>\.repo-keys\private-key.pem` |
+| | 第一次迁移：`D:\OneDrive\...\tenda_be12-pro\.repo-keys\private-key.pem` |
+| | 当前机器：`C:\Users\LG\workspace\minimax\Tenda-BE12-Pro-OpenWrt\.repo-keys\private-key.pem` |
 | 大小 | 2524 字节 |
 | 类型 | RSA 3072 |
 | 已验证 | `openssl rsa -check` → `RSA key ok` |
@@ -65,21 +78,25 @@ GitHub → Settings → Secrets and variables → Actions → New repository sec
 
 | 项 | 值 |
 |---|---|
-| 路径 | `D:\OneDrive\User\Network\Router\tenda_be12-pro\.sshhelper\` |
-| 体积 / 数量 | 2.2 MB / 376 个文件 |
+| 路径 | `<项目根上级目录>\.sshhelper\` |
+| 体积 / 数量 | 6.4 MB / 428 个文件（2026-10-15 实测） |
 | 为什么必须搬 | 全是**跟设备对话的工具**，git 里没有，也没有别的来源 |
 
 核心是两个入口：
 
 ```sh
 # 在路由器上跑一个本地脚本
-bash /d/OneDrive/User/Network/Router/tenda_be12-pro/.sshhelper/rssh.sh <脚本POSIX路径>
+bash /c/Users/LG/workspace/minimax/Tenda-BE12-Pro-OpenWrt/.sshhelper/rssh.sh <脚本POSIX路径>
 
 # 传一个本地文件到路由器
-bash /d/OneDrive/User/Network/Router/tenda_be12-pro/.sshhelper/rscp.sh <本地POSIX路径> <远端路径>
+bash /c/Users/LG/workspace/minimax/Tenda-BE12-Pro-OpenWrt/.sshhelper/rscp.sh <本地POSIX路径> <远端路径>
 ```
 
 设备连接参数（`192.168.100.254`，root，空密码）也只存在这些脚本里。
+
+⚠️ **`rssh.sh` / `rscp.sh` 里写死了 askpass 的绝对路径**（指向 `.sshhelper/askpass-empty.sh`）。
+换机后如果这两个脚本报「找不到 askpass」，就是这里没跟着改。
+第二次迁移（2026-10-15）已经把这批路径统一替换过了 —— 但**再换一台机器还是要重来一遍**。
 
 ⚠️ `rssh.sh` 带了 `UserKnownHostsFile=NUL`，副作用是会在**项目根目录**生成假的 known_hosts 文件。
 本机已经留下了 `_UL`、`_UL-MSI-Z390`、`_UL-MSI-Z390-2`、`_UL-MSI-Z390-3` 这几个 97 字节的垃圾文件，
@@ -186,19 +203,26 @@ bash /d/OneDrive/User/Network/Router/tenda_be12-pro/.sshhelper/rscp.sh <本地PO
 git clone https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt.git
 cd Tenda-BE12-Pro-OpenWrt
 git checkout immortalwrt-25.12
-git log --oneline -1     # 期望: d9cc194 或更新
+git log --oneline -1     # 期望: d656b12 或更新
 ls docs/HANDOVER-MIGRATION.md   # 这份文档本身，验 clone 对不对最直接
 ```
 
-分支情况（截至写作时）：
+分支情况（截至 2026-10-15）：
 
-| 分支 | HEAD |
-|---|---|
-| `main` | `cf00b83` |
-| `immortalwrt-25.12` | `d9cc194` ← 当前在做的 |
+| 分支 | HEAD | 说明 |
+|---|---|---|
+| `immortalwrt-25.12` | `d656b12` | ← **GitHub 默认分支，当前在做的** |
+| `main` | `a89d1fe` | OpenWrt SNAPSHOT 线，非默认 |
 
-⚠️ **`main` 是旧的**（停在坑 12/13 修完那会儿），坑 14/15 的东西全在 `immortalwrt-25.12` 上。
-别 checkout 错了。
+⚠️ 两个分支的**内核不同（6.12 vs 6.18）、`.config` 不同、踩到的坑也不同**。
+坑 1~15 是 `main` 上踩的，**坑 16/17/18 是 `immortalwrt-25.12` 独有的**。
+固件**不要混刷** —— rootfs 结构不一样。
+别 checkout 错了；日常开发在 `immortalwrt-25.12`。
+
+> ⚠️ **clone 前先配 git 网络设置**，否则大概率拉不动：
+> `github.com` 直连会超时/被重置，且 Windows 的 schannel 后端会报
+> `unexpected eof while reading`。见本文件 §5.2。
+> 第二次迁移实测：配好代理后 `git ls-remote` 一次即通。
 
 ### Step 3 · 装 Minimax Code，用同一个账号登录
 
@@ -227,8 +251,19 @@ wc -c < .repo-keys/private-key.pem                        # 期望: 2524
 
 ### Step 6 · 搬 `.sshhelper/`
 
-复制 `D:\OneDrive\User\Network\Router\tenda_be12-pro\.sshhelper\` 到新机器同位置。
-搬完改掉里面脚本的路径（如果新机器用户名不是 `tb852`）。
+复制 `<项目根上级目录>\.sshhelper\` 到新机器同位置。
+
+⚠️ **搬完一定要改脚本里的绝对路径**。`.sshhelper/` 下 72 个脚本写死了旧机的
+`/d/OneDrive/User/Network/Router/tenda_be12-pro`，照搬过来全是死路径。
+一次 sed 批量替换即可（前缀 1:1 映射）：
+
+```sh
+H="<新机>/.sshhelper"
+sed -i "s|/d/OneDrive/User/Network/Router/tenda_be12-pro|/c/Users/LG/workspace/minimax/Tenda-BE12-Pro-OpenWrt|g" "$H"/*.sh "$H"/*.ps1 "$H"/*.py
+```
+
+改完顺带确认 `check-migration.sh` 的路径校验没被自己搞坏 ——
+它现在跟 `$HELPER` 变量**动态比对**，不会因为换了路径就误判。
 
 ### Step 7 · 跑自检
 
@@ -304,7 +339,20 @@ TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed
 
 ## 6. 自检脚本
 
-换完机跑一遍，全绿才算迁移成功。存成 `check.sh` 用 Git Bash 跑：
+> ⚠️ **下面这段是 2026-10-04 的初版，已经过时。**
+> 现役版本在 **`<项目根上级目录>/.sshhelper/check-migration.sh`**，比这段多查了：
+> 自建源私钥（`openssl rsa -check` + 2524 字节 + **密钥对匹配**）、
+> 公钥在位、`files/` 双份同步、脚本可执行位、行尾纯 LF、git 网络配置、bash 路径陷阱。
+> 直接跑现役的，别照抄下面这段：
+>
+> ```sh
+> & 'C:\Program Files\Git\bin\bash.exe' '<项目根上级目录>/.sshhelper/check-migration.sh'
+> ```
+>
+> 它的路径判据是跟脚本自身的 `$HELPER` 变量动态比对的，
+> **换机后只需要替换脚本顶部那两个 `ROOT=` / `HELPER=` 常量**，不会自我误判。
+
+换完机跑一遍，全绿才算迁移成功。初版（存档）：
 
 ```sh
 #!/bin/sh
@@ -365,8 +413,17 @@ echo
 - **签名机制核实与 4 处致命缺陷修复**（`208119c`）
 - **坑 14**（内核模块源）`b02e556`
 - **坑 15**（版本号时间戳）`32506bc` / `b719707` / `12316b8` / `4f67b45`
+- **坑 16**（预置包漏装 wireless）`a2368a9`
+- **坑 17**（`ip-full` 与 `ip-tiny` 冲突）`ac507aa`
+- **坑 18**（ccache 从未生效）`5fef31a` + `d656b12`
 
-### 7.2 CI 最新状态：Run #22（本次会话查实）
+### 7.2 CI 最新状态
+
+> ✅ **当前：Run #28 success**（`d656b12`，2026-10-14，130.8 分钟）。
+> 下面 §7.3 起的内容是 2026-10-04 当时的记录，**已被后续 Run #23~#28 推翻，保留仅供追溯**。
+
+<details>
+<summary>历史记录：Run #22（2026-10-04 本次会话查实）</summary>
 
 | 项 | 值 |
 |---|---|
@@ -415,19 +472,21 @@ make -j$(nproc) V=s 2>&1 | tee /tmp/build.log || { ...; exit 1; }
 > 也就是当初坚持写 `find_sysupgrade_bin` 回读的那个决定救了场 ——
 > 否则这一轮会以「✅ 编译成功」的形式静静溜过去，体积守卫和内容抽查全部静默跳过。
 
-
 ⚠️ 已知隐患：`.github/workflows/build.yml` 的 `timeout-minutes: 360` 可能不够——
 Run #19 的冷构建跑了 2h15m 还在工具链阶段（ccache 几乎没命中，因为之前缓存是
 openwrt SNAPSHOT 内核 6.18、这次是 ImmortalWrt 内核 6.12）。**考虑调高。**
 
+</details>
+
 ### 7.3 用户待办（换机后依然要提醒）
 
 1. 🔴 把 `private-key.pem` 加为 GitHub Actions secret `TENDO_REPO_PRIVATE_KEY`
+   —— **截至 2026-10-15 仍未配**，这是当前头号阻塞项（见 `AGENTS.md` §7.1）
 2. 🟡 在 LuCI 里改掉公开的默认 WiFi 密码（`AGENTS.md` §1 §9 §11 已写明这是用户知情同意的，
    但长期公开不理想）
 3. 🟡 装包验证 kmod 能真正加载（用户此前选择「先只加源，不装任何包」，已加 1 个官方 kmods 源，
    包数 9187 → 10412）
-4. 🟡 考虑调高 `timeout-minutes`
+4. 🟡 考虑调高 `timeout-minutes`（当前 360，Run #28 用了 130.8 分钟，暂时还够）
 
 ### 7.4 已知的设备侧硬约束（别踩）
 
@@ -442,14 +501,47 @@ openwrt SNAPSHOT 内核 6.18、这次是 ImmortalWrt 内核 6.12）。**考虑�
 
 ## 8. 交给下一个 agent 的开场白
 
-新机器上第一个 agent 读完 `AGENTS.md` 之后，直接说这句即可接上：
+新机器上第一个 agent 读完 `AGENTS.md` 之后，直接说这段即可接上（**2026-10-15 更新**）：
+
+> 接着 `immortalwrt-25.12` 分支干，HEAD 是 `d656b12`（GitHub 默认分支）。
+>
+> **构建链路已经全绿**：坑 1~18 全部修完，最近一次成功是 **Run #28**
+> （2026-10-14，130.8 分钟）。`make | tee` 吞退出码、stamp 假失败、
+> ccache 没生效这些都已经是过去式，别再去「修」它们。
+>
+> **现在的阻塞点全是凭据，不是代码**：
+> 1. 🔴 Actions secret `TENDO_REPO_PRIVATE_KEY` 还没配 ——
+>    不配的话 CI 里自建 apk 源那一整段全部跳过（硬逻辑）。
+> 2. 🔴 本机没有 GitHub PAT —— 推不了、也拉不到 Actions 构建日志（实测 403）。
+>
+> **唯一半悬的技术疑点**：坑 18 的 ccache 到底有没有真落盘。
+> Run #28 的四个 ccache 步骤在 API 上全绿，但 Actions 缓存缺失只报 warning、
+> **不会让步骤变红**，所以绿灯证明不了任何事。要拉 Run #28 的完整日志核对，
+> 判据是日志里有没有 `ccache: ...gcc` 调用行、以及保存步骤还报不报
+> "Path ... do(es) not exist"。
+>
+> **别忘了两条机器固有特征**：
+> - PowerShell 里裸敲 `bash` 会打到 WSL 而不是 Git Bash（本机 WSL 有发行版，
+>   **不报错、静默跑错环境**）。脚本一律写全路径 `C:\Program Files\Git\bin\bash.exe`。
+> - `openssl ... | sha256sum` 这类**碰二进制的管道必须在 Git Bash 里跑**。
+>   PowerShell 5.1 会把二进制转成文本再编码，算出的哈希必然不同（假警报）。
+>
+> 换机交接文档在 `docs/HANDOVER-MIGRATION.md`，自检脚本在 §6。
+
+<details>
+<summary>2026-10-04 的旧开场白（已过期，留档）</summary>
 
 > 接着 `immortalwrt-25.12` 分支干。HEAD 是 `d9cc194`。上一个会话的收尾状态：
 > CI Run #22 **并没有编译成功** —— 第 18 步显示绿灯是假的（`make | tee` 吞了退出码，
 > 已在 `d9cc194` 修掉），artifact 里只有 8 个 BL2 preload，没有 sysupgrade 镜像。
 > 第 19 步的失败是**正确报警**，别去「修」它。
 > 真正待查的是 **`make` 为什么失败**：拉第 18 步的完整日志（约 46 MB）。
-> 换机交接文档在 `docs/HANDOVER-MIGRATION.md`，自检脚本在 §6。
+
+</details>
+
+> ✅ 上面的问题**已经全部查清并修掉了**：管道吞退出码在 `d9cc194` 修，
+> `make` 失败的根因是坑 17（`ip-full` 与 `ip-tiny` 同时 `=y`），
+> 在 `ac507aa` 修。Run #25 → #28 就是这一路的排障过程。
 
 ---
 
