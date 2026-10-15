@@ -83,6 +83,39 @@ echo "  LuCI 系统页会显示: OpenWrt SNAPSHOT $REVISION"
 # Kconfig 默认 y 会给 .bin 加**前缀**，和 stamp-firmware.sh 的**后缀**撞车。
 echo "# CONFIG_VERSION_CODE_FILENAMES is not set" >> .config
 
+# ---- ccache 目录：必须和 CI 缓存步骤指向同一个地方 ----------------------------
+# ⚠️⚠️ 这一行是 Run #28 之后才补的，坑 18 的**第二层**根因。
+#
+# 上游 rules.mk:347-354（immortalwrt openwrt-25.12，逐字）：
+#     ifneq ($(CONFIG_CCACHE),)
+#       HOSTCC:= ccache $(HOSTCC)
+#       export CCACHE_BASEDIR:=$(TOPDIR)
+#       export CCACHE_DIR:=$(if $(CONFIG_CCACHE_DIR),$(CONFIG_CCACHE_DIR),$(TOPDIR)/.ccache)
+#
+# 注意那个 **`export`**：OpenWrt 会把 CCACHE_DIR 覆盖成 `$(TOPDIR)/.ccache`
+# 再传给所有子进程，**优先于 workflow 在 GITHUB_ENV 里设的 CCACHE_DIR**。
+#
+# 于是 Run #28 的实际状况是：
+#   ccache 往   $GITHUB_WORKSPACE/openwrt/.ccache  写了 1.4 GiB
+#   缓存步骤去  ~/.ccache  找            → 空目录 → "Path ... do(es) not exist"
+# 两边永远对不上，每轮都是全冷编译，缓存一次都存不进去。
+#
+# 修法有两条路：
+#   (a) 把缓存步骤的 path 改成 openwrt/.ccache —— **不可行**。
+#       缓存恢复排在「生成 feeds.conf」之前（build.yml 第 75 行 vs 第 98 行），
+#       恢复会先把 openwrt/ 目录建出来，后面 gen-feeds.sh 的 git clone 撞上
+#       「destination path already exists and is not an empty directory」直接失败。
+#   (b) 让 OpenWrt 同意用我们指定的目录 —— 就是这里。
+#       CONFIG_CCACHE_DIR 是公开的 kconfig 选项（config/Config-devel.in:
+#       `string "Set ccache directory" if CCACHE`），不是内部变量。
+#
+# 目录值由调用方给（CI 传 CCACHE_DIR），本地跑时退回 $HOME/.ccache。
+# .config 是每次生成的、不入库，所以写绝对路径没问题。
+CCACHE_TARGET_DIR="${CCACHE_DIR:-$HOME/.ccache}"
+echo "CONFIG_CCACHE_DIR=\"$CCACHE_TARGET_DIR\"" >> .config
+echo "▸ ccache 目录（写入 CONFIG_CCACHE_DIR）"
+echo "  $CCACHE_TARGET_DIR"
+
 # 让 make 解析依赖并补全
 echo "▸ 运行 make defconfig 解析…"
 make defconfig
@@ -103,6 +136,29 @@ if grep -qE '^CONFIG_VERSION_CODE_FILENAMES=y$' .config; then
 fi
 echo "  ✅ CONFIG_VERSION_CODE_FILENAMES 未开启（文件名前缀交给 stamp-firmware.sh）"
 echo "  ℹ️  版本串不经过 .config，靠 REVISION 注入，最终由 verify-firmware.sh 校验"
+
+# ⚠️ CCACHE_DIR 是 `string ... if CCACHE` —— CCACHE 不可见时会被 defconfig 删掉。
+#    而 CCACHE 本身在 `if DEVEL` 菜单块内，DEVEL=n 时连带 CCACHE_DIR 一起消失。
+#    这个坑已经栽过一次（坑 18），这里必须回读，不能只看写进去了。
+echo "▸ 回读校验 ccache 相关符号…"
+if ! grep -q '^CONFIG_CCACHE=y$' .config; then
+  echo "  ❌ CONFIG_CCACHE 没进 .config —— ccache 不会参与编译（检查 CONFIG_DEVEL=y）"
+  exit 1
+fi
+echo "  ✅ CONFIG_CCACHE=y"
+if grep -q '^CONFIG_CCACHE_DIR=' .config; then
+  got=$(sed -n 's/^CONFIG_CCACHE_DIR="\(.*\)"$/\1/p' .config)
+  if [ "$got" = "$CCACHE_TARGET_DIR" ]; then
+    echo "  ✅ CONFIG_CCACHE_DIR = $got"
+  else
+    echo "  ❌ CONFIG_CCACHE_DIR 被 defconfig 改成了 '$got'（期望 '$CCACHE_TARGET_DIR'）"
+    exit 1
+  fi
+else
+  echo "  ❌ CONFIG_CCACHE_DIR 丢失 —— rules.mk 会回退到 \$(TOPDIR)/.ccache，"
+  echo "     和 CI 缓存步骤的 ~/.ccache 对不上（坑 18 第二层）"
+  exit 1
+fi
 
 # 校验关键项
 echo

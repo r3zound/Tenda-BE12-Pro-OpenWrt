@@ -1030,14 +1030,58 @@ key: ccache-${{ hashFiles('versions.lock', 'configs/base.config') }}
 
 上游版本 / 配置没变 → 精确命中；变了 → 兜底恢复 + 重新填。
 
-#### ⬜ 残留未验证
+#### ⬜ 第三层：ccache 目录两边对不上（2026-10-15 拉 Run #28 日志后定位，已修）
 
-Run #28 首次真正填上缓存，**提速幅度要等下一轮才能量化**。
-跨分支内核不同（SNAPSHOT 6.18 vs ImmortalWrt 6.12）会让 target 侧 kmod 缓存不命中，
-但 **host 工具链命中不受影响**，而那正是最耗时的一段。
+Run #28 的证据（68 MB 完整日志实测）：
 
-**验证判据**：下一轮构建日志里应出现 `ccache: aarch64-...gcc` 之类的调用行，
-且保存缓存步骤**不再**出现 "Path ... do(es) not exist"。两条都要满足才算修好。
+| 观察 | 值 | 说明 |
+|---|---|---|
+| `ccache -s` 统计 | `Cacheable calls: 28007 / 35513 (78.86%)`，`Cache size: 1.4 / 5.0 GiB` | **ccache 确实参与了编译**，第一层修复有效 |
+| 日志里 `ccache ... gcc` | 19699 行 | 编译器被包装，host 工具链尤其明显 |
+| 保存缓存步骤 | `[warning]Path Validation Error: ... do(es) not exist` + `Cache save failed` | **但缓存一个字节都没存进去** |
+
+「有 1.4 GiB 数据」和「路径不存在」能同时成立，只有一个解释：**数据在 A 目录，
+缓存步骤去 B 目录找**。根因在上游，逐字如下（immortalwrt `openwrt-25.12` `rules.mk:347-354`）：
+
+```make
+ifneq ($(CONFIG_CCACHE),)
+  TARGET_CC:= ccache $(TARGET_CC)
+  HOSTCC:= ccache $(HOSTCC)
+  export CCACHE_BASEDIR:=$(TOPDIR)
+  export CCACHE_DIR:=$(if $(CONFIG_CCACHE_DIR),$(CONFIG_CCACHE_DIR),$(TOPDIR)/.ccache)
+```
+
+**关键是那个 `export`。** OpenWrt 把 `CCACHE_DIR` 覆盖成 `$(TOPDIR)/.ccache`
+再传给所有子进程，**优先于 workflow 在 `GITHUB_ENV` 里设的 `CCACHE_DIR`**。
+而 `TOPDIR:=${CURDIR}`（顶层 Makefile:5）= OpenWrt 源码树根。于是：
+
+```
+ccache 实际写入 : $GITHUB_WORKSPACE/openwrt/.ccache   ← 1.4 GiB 在这
+缓存步骤去找   : ~/.ccache                              ← 空目录
+```
+
+**为什么不能简单地把缓存路径改成 `openwrt/.ccache`**：
+缓存恢复排在 `build.yml` 的「恢复 ccache 缓存」步骤（第 75 行），
+而 clone OpenWrt 在「生成 feeds.conf」（第 98 行）。恢复会**先把 `openwrt/` 目录建出来**，
+后面 `gen-feeds.sh` 的 `git clone` 撞上
+`destination path 'openwrt' already exists and is not an empty directory` 直接失败。
+
+**修法（已实施）**：反过来让 OpenWrt 同意用我们指定的目录。
+`CONFIG_CCACHE_DIR` 是**公开的 kconfig 选项**（`config/Config-devel.in`：
+`string "Set ccache directory" if CCACHE`），不是内部变量 ——
+`gen-config.sh` 在 `make defconfig` **之前**把它写进 `.config`，
+并在 defconfig **之后回读校验**（因为它 `if CCACHE`，同样会被 defconfig 吃掉）。
+CI 的「配置 ccache」步骤补 `export CCACHE_DIR` + `mkdir -p`，
+让 `ccache -M 5G` / `ccache -z` 也作用在同一个目录（GITHUB_ENV 要下个 step 才生效，
+当前 step 里不 export 的话这两条命令作用在默认目录）。
+
+> ⚠️ 顺带记一笔：`ccache -s` 的输出里**不打印缓存目录**，日志里也搜不到
+> `openwrt/.ccache` 字样。**光看日志确认不了数据落在哪** —— 是靠读上游源码
+> 定位的。这又一次印证本项目的原则：**先取证，别猜**。
+
+**验证判据**：下一轮构建日志里
+(a) 不再出现 `Path ... do(es) not exist`，且 (b) 出现 `Cache saved` / 缓存大小，
+两条都满足才算修好。
 
 ---
 
@@ -1515,6 +1559,17 @@ grep -nE '^\s*key:.*github\.run_id' .github/workflows/build.yml \
   && echo "❌ ccache key 用了 run_id，精确命中永远失败（坑 18）"
 grep -q "hashFiles('versions.lock', 'configs/base.config')" .github/workflows/build.yml \
   || echo "❌ ccache key 没有基于 versions.lock + base.config 的内容 hash（坑 18）"
+# ⚠️ 目录三方必须一致：恢复步骤 path / 保存步骤 path / gen-config.sh 写的
+#    CONFIG_CCACHE_DIR。rules.mk:354 的 export 会让 openwrt 自己选
+#    $(TOPDIR)/.ccache，不显式设就永远对不上（坑 18 第三层）。
+gen-config.sh 里的写入必须排在 `make defconfig` **之前**；
+awk '/^make defconfig$/{exit} /CONFIG_CCACHE_DIR=/{f=1} END{exit !f}' scripts/gen-config.sh \
+  || echo "❌ CONFIG_CCACHE_DIR 没写在 make defconfig 之前 —— 会被 defconfig 覆盖"
+grep -q "回读校验 ccache" scripts/gen-config.sh \
+  || echo "❌ gen-config.sh 没回读校验 CCACHE_DIR —— 它 if CCACHE，会被 defconfig 删掉"
+# CI 里 ccache -M / -z 必须 export 过，否则作用在默认目录
+grep -q 'export CCACHE_DIR=' .github/workflows/build.yml \
+  || echo "❌ 「配置 ccache」步骤没 export CCACHE_DIR —— -M/-z 落错目录（坑 18 第三层）"
 # ip-full / ip-tiny 同时 provides 虚拟包 ip 且互斥
 grep -qx 'CONFIG_PACKAGE_ip-full=y' configs/base.config \
   && grep -qx 'CONFIG_PACKAGE_ip-tiny=y' configs/base.config \

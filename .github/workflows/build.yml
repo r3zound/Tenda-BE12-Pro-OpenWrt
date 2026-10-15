@@ -65,10 +65,17 @@ jobs:
       # ---------------------------------------------------------------------
       - name: 配置 ccache
         run: |
+          # ⚠️⚠️ 必须在这里就 export，不能只写进 GITHUB_ENV ——
+          #    GITHUB_ENV 要下一个 step 才生效，而下面两条 ccache 命令
+          #    是**当前** step 就要跑的，不 export 的话它们作用在默认目录
+          #    （$HOME/.cache/ccache），-M 设的上限和 -z 清的统计都落错地方。
+          export CCACHE_DIR="$HOME/.ccache"
+          mkdir -p "$CCACHE_DIR"
           ccache -M 5G
           ccache -z
-          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
           echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          echo "ccache 目录: $CCACHE_DIR"
           echo "ccache 版本: $(ccache --version | head -1)"
 
       # ---------------------------------------------------------------------
@@ -76,6 +83,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ccache
+          # ⚠️ 路径必须与 gen-config.sh 写进 CONFIG_CCACHE_DIR 的那个**完全一致**。
+          #    上游 rules.mk:354 是 `export CCACHE_DIR:=$(if $(CONFIG_CCACHE_DIR),
+          #    $(CONFIG_CCACHE_DIR),$(TOPDIR)/.ccache)` —— 那个 export 会覆盖
+          #    这里的 GITHUB_ENV。不显式设 CONFIG_CCACHE_DIR 的话，ccache 会把
+          #    数据写进 openwrt/.ccache，而这里去 ~/.ccache 找，两边永远对不上：
+          #    日志里 ccache 有 1.4 GiB、缓存保存却报 "Path ... do(es) not exist"。
+          #    详见 AGENTS.md §5 坑 18。
+          #
           # ⚠️ 不能再用 run_id 当 key —— run_id 每次运行都不同，
           #    精确命中永远失败，只能靠 restore-keys 兜底「最近的缓存」。
           #    改成基于 versions.lock + base.config 的内容 hash：
@@ -489,6 +504,10 @@ jobs:
         uses: actions/cache/save@v4
         if: always()
         with:
+          # ⚠️ 这里的 path 必须和「恢复 ccache 缓存」**以及** gen-config.sh 写进
+          #    CONFIG_CCACHE_DIR 的那个目录三方一致。三者只要有一处对不上，
+          #    这里就会报 "Path ... do(es) not exist" —— 而且**步骤仍然显示
+          #    success**（缓存失败只是 warning），绿灯完全证明不了问题。
           path: ~/.ccache
           # ⚠️ 不能再用 run_id 当 key —— run_id 每次运行都不同，
           #    精确命中永远失败，只能靠 restore-keys 兜底「最近的缓存」。
