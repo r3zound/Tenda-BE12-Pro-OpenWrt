@@ -107,8 +107,51 @@ discover_pkgs() { # $1=package/ 下的目录
   [ -d "$1" ] || return 0
   find "$1" -maxdepth 5 -name Makefile -type f 2>/dev/null | while IFS= read -r mf; do
     # 只认行首 define（允许前导空白）；被 # 注释掉的包不会命中
-    grep -hoE '^[[:space:]]*define[[:space:]]+Package/[A-Za-z0-9._+-]+' "$mf" 2>/dev/null \
-      | sed -E 's@.*/Package/@@; s@.*[[:space:]]Package/@@'
+    #
+    # ⚠️⚠️ 这里的**不能**写回 `Package/[A-Za-z0-9._+-]+`。
+    #    Run #31 实测：9/12 个面板一个包都发现不了，共识只有 5 个包定义。
+    #    本地克隆 openwrt-passwall 复现，真相是上游大量使用 **make 变量**写包名：
+    #
+    #        PKG_NAME:=luci-app-passwall          # Makefile:9
+    #        define Package/$(PKG_NAME)/config   # Makefile:40
+    #
+    #    老正则要求 `Package/` 后面至少一个 [A-Za-z0-9._+-]，
+    #    而实际下一个字符是 `$` → **整行匹配不上，返回空**。
+    #
+    #    连带后果：那 9 个面板没进 .config → `make package/<目录>/compile`
+    #    没有目标 → 「编译失败」，而 /tmp/repo-*.log 是**空的**，
+    #    报错静默无声。看起来像上游不兼容，实际是我们自己看不见它们。
+    #
+    # 现在：先宽松地把 `Package/<名字>` 抓出来，$(VAR) 形式再到**同一个
+    # Makefile** 里把变量取值查回来。字面名写法（mosdns 那种）不受影响。
+    grep -hoE '^[[:space:]]*define[[:space:]]+Package/[^/[:space:]]+' "$mf" 2>/dev/null \
+      | sed -E 's@.*Package/@@' \
+      | while IFS= read -r name; do
+          case "$name" in
+            '$('*)
+              # ⚠️ 剥壳必须写 `${name#\$\(}` —— 只写 `${name#\$}` 会留下
+              #    前导的 `(`，变量名变成 `(PKG_NAME`，sed 自然查不到值
+              #    （第一版就栽在这，返回空又不报错）。
+              var="${name#\$\(}"
+              var="${var%\)}"
+              val="$(sed -nE "s@^[[:space:]]*${var}[[:space:]]*[:?+]?=[[:space:]]*([A-Za-z0-9._+-]+).*@\1@p" \
+                     "$mf" 2>/dev/null | head -1 || true)"
+              if [ -n "$val" ]; then
+                echo "$val"
+              else
+                # 解析不出来要出声 —— 静默丢掉就退回到「这个面板不存在」的老问题
+                echo "⚠️  $mf: 包名变量 \$$var 解析不出值，$name 会被跳过" >&2
+              fi
+              ;;
+            *)
+              # 只要是合法包名才收；含 $ ( ) 等 make 语法的直接跳过
+              case "$name" in
+                *[!A-Za-z0-9._+-]*) ;;
+                *) echo "$name" ;;
+              esac
+              ;;
+          esac
+        done
   done | sort -u
 }
 
