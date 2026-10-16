@@ -24,9 +24,9 @@
 | **开发分支** | **`immortalwrt-25.12`**（= GitHub 默认分支）· `main` = OpenWrt SNAPSHOT 线，非默认 |
 | **基线** | **ImmortalWrt `openwrt-25.12`**，commit `313718c25f206cdeee399bdc6c002b7388c9a513`（锁 SHA，不锁分支名） |
 | **目标** | `mediatek/filogic` / `tenda_be12-pro`（MT7987A，512MB DDR4，128MB SPI-NAND） |
-| **当前状态** | ✅ 固件构建链路全绿（坑 1~18 全部修完）；⬜ **新固件尚未上机验证** |
-| **最新成功 CI** | [Run #28](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/38506029841)（`immortalwrt-25.12` / `d656b12`） |
-| **编译耗时** | 130.8 分钟（Run #28，**全冷编译** —— ccache 那一轮刚修完，见坑 18） |
+| **当前状态** | ✅ 固件构建链路全绿（坑 1~19 全部修完）；✅ **ccache 已真正生效**（命中 10%→28%，耗时 3h13m→1h41m）；⬜ **新固件尚未上机验证** |
+| **最新成功 CI** | Run #30（`6ee6254`，2026-10-16）—— 固件全绿，**自建源因缺 kmod 拒绝发布**（见 §7.1） |
+| **编译耗时** | **1h41m**（Run #30，ccache 命中后）· 冷构建 3h13m（Run #29） |
 | **CI 触发** | 手动 `workflow_dispatch` / 推 tag / 每周定时。**⛔ 推分支不触发构建**（见下） |
 
 **一句话任务**：构建体系已经稳定，**接下来该做的是上机验证 + 补齐凭据**，
@@ -1254,31 +1254,91 @@ ref 语法：分支用 `;`，commit 用 `^`。
 
 ## 7. 当前待办
 
-### 7.1 优先级最高：补凭据（🔴 阻塞自建源）
+### 7.1 ⬜ 暂不投入：自建 apk 源（2026-10-16 决定）
 
-| # | 事项 | 状态 | 谁做 |
+**这一项曾经是「头号待办」，现在降级 —— 不是因为修好了，而是因为它解决的问题
+在本分支上并不成立。** 下面是 Run #29/#30 实测出来的完整结论。
+
+#### 链路本身已经通了
+
+Run #29 是这条链路第一次真正执行（`TENDO_REPO_PRIVATE_KEY` 配好之后），
+Run #30 修完坑 19 后走得最远的一次：
+
+| 环节 | 状态 | 证据 |
+|---|---|---|
+| 注入签名私钥 | ✅ | `密钥对校验通过（pubkey sha256 74ea4b938d1c9496…）` |
+| 拉取面板仓库 | ✅ | 12 个仓库，1 个不可用（clash-rs 无 Makefile） |
+| 找包集目录 | ✅ | `包集目录: aarch64_cortex-a53`（坑 19 修复生效） |
+| 收包 | ✅ | `收拢 165 个 .apk` |
+| 生成并签名索引 | ✅ | `索引 30994 字节`、`签名确实生效（与不签名的产物不同）` |
+| **发布** | ❌ | `kmod-nft-tproxy 不在源里` → 硬校验拒绝 |
+
+#### 发不出去的原因，以及为什么这未必是坏事
+
+```
+固件内核: 6.12.108
+检查了 0 个 kmod              ← 自建源唯一的存在理由，一个都没有
+❌ kmod-nft-tproxy 不在源里
+❌ 硬校验未通过，拒绝发布（Pages 会保留上一版好内容）
+```
+
+链条是：**12 个面板里 5 个在 ImmortalWrt 25.12 上编译失败 →
+它们是 kmod-nft-tproxy 的需求方 → 这些 kmod 不会被编 → 源里 0 个 kmod →
+硬校验拒绝发布。** 失败的 5 个恰好全是透明代理类：
+
+```
+openwrt-passwall   openwrt-passwall2   OpenWrt-nikki-rs
+luci-app-xray      openwrt-fchomo
+```
+
+这些面板是按 **OpenWrt mainline** 写的，我们在 **ImmortalWrt 25.12** 上。
+
+**关键判断：自建源对这个项目的实际需求没有价值。**
+
+| 需求 | 自建源必要吗 |
+|---|---|
+| 双 WAN / mwan3 | ❌ mwan3 明确**不打包进固件**，刷机后从 `dl12345/mwan3` 手动装 |
+| 无线预置 / LuCI 主题 | ❌ 已在固件里 |
+| 内核模块（kmod） | ❌ **官方镜像站就能装** —— 坑 14 已用 `add_kmods_feed()` 自动补官方 kmods 源 |
+
+也就是说，自建源**唯一的价值**是「kmod 与固件同 build root 产出、vermagic 100% 匹配」，
+而这个价值的前提是透明代理面板能编出来 —— 现在编不出来。
+而用户实际要的功能，官方源已经全部覆盖。
+
+> ✅ **一个好消息：fail-closed 机制按设计工作了。**
+> 硬校验没有因为「面板编译失败」就放水，而是老老实实因为「缺命门 kmod」拒绝发布，
+> Pages 上保留着上一版好内容。**这是这套守卫第一次在真实故障下证明自己不是摆设** ——
+> 参见 §5 坑 19 末尾「绿灯证明不了任何事」那几条，本项目被这种情况骗过很多次。
+
+#### 如果将来要重新捡起这条线
+
+1. 先查 `kmod-nft-tproxy` 为什么没进 `bin/packages/aarch64_cortex-a53/` ——
+   是面板没编出来连带没编，还是 `.config` 里压根没有 `CONFIG_PACKAGE_kmod-nft-tproxy=m`。
+2. 面板编译的完整报错现在能抽出来了（`build-repo.sh` 已改用 grep ERROR 而非 `tail -5`）。
+3. 这些面板未必值得改成能编译 —— 它们本来就面向 mainline。
+
+### 7.2 ⛔ 阻塞项：GitHub 凭据
+
+**两项都已解决（2026-10-15），列在这里只为记录当时的状态。**
+
+| # | 事项 | 当时状态 | 现在 |
 |---|---|---|---|
-| 1 | 🔴 把 `private-key.pem` 配成 Actions secret **`TENDO_REPO_PRIVATE_KEY`** | **未配** | 用户（GitHub 网页） |
-| 2 | 🔴 配一个 GitHub PAT（`repo` + `workflow`） | 本机没有 | 用户 |
-
-**第 1 条不配的后果**：CI 会走 OpenWrt 自动生成的一次性 EC 密钥 ——
-固件能用，但 **`build.yml` 里自建源那一整段（签名 / build-repo / 发布 / 上传 apk-repo）
-全部 `if: have_key == 'true'` 跳过**。是硬逻辑，不会拿一次性密钥凑数。
-
-**第 2 条不配的后果**：无法推送、无法拉 Actions 构建日志（日志接口需认证，实测 403）。
+| 1 | `private-key.pem` → Actions secret `TENDO_REPO_PRIVATE_KEY` | 🔴 未配 | ✅ 已配（Run #29 首次拿到密钥对校验通过） |
+| 2 | GitHub PAT（`repo` + `workflow`） | 🔴 本机没有 | ✅ 已授权，scopes = `gist, repo, workflow` |
 
 > ⚠️ `git push` 卡住不动通常不是网络问题，是 **Git Credential Manager 在等授权弹窗**。
 > 绕开：`git -c credential.helper= push https://<TOKEN>@github.com/r3zound/Tenda-BE12-Pro-OpenWrt.git <branch>`
+>
+> 本机链路的真实脾气（实测）：github.com 直连超时/被重置，**必须走代理**，
+> 且链路会**间歇性 TLS EOF** —— 一次失败不算结论。
+> 所有 git 网络操作套 `.sshhelper/retry-git.sh`（最多 4 次重试）；
+> 拉 Actions 日志必须带 `Authorization` 头（不带实测 403），且用
+> `C:\Program Files\Git\ucrt64\bin\curl.exe` 走代理，PowerShell 的
+> `Invoke-WebRequest` 会撞 schannel EOF。
 
-### 7.2 其次：验证坑 18 的 ccache 是否真的生效
+### 7.3 优先级最高：上机验证
 
-Run #28 首次填上缓存，但**提速幅度尚未量化**，且**保存步骤是否真落盘未验证**
-（该步骤在 API 上显示 `success`，但缓存缺失只报 warning、不让步骤变红）。
-需要拉 Run #28 的完整日志核对，判据见 **§5 坑 18「残留未验证」**。
-
-### 7.3 优先级最高（并行）：上机验证
-
-**固件构建链路已全绿，接下来该做的是让用户刷上去。** 构建体系本身已稳定（坑 1~18 全修）。
+**固件构建链路已全绿，接下来该做的是让用户刷上去。** 构建体系本身已稳定（坑 1~19 全修）。
 
 给用户的刷机要点（详见 `README.md` §7、§4.9）：
 

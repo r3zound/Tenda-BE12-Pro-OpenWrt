@@ -211,6 +211,7 @@ ok "面板符号就位（丢失 $MISSING_M 个）"
 #    面板编译失败要等三小时才发现。提前编，失败只要十几分钟。
 step "预编译面板"
 PB_FAIL=0
+PB_NAMES=""
 for d in "${PANEL_DIRS[@]}"; do
   [ -d "$SRC/package/$d" ] || continue
   printf "  %-22s " "$d"
@@ -218,13 +219,29 @@ for d in "${PANEL_DIRS[@]}"; do
     echo "${GRN}ok${RST}"
   else
     echo "${YEL}失败${RST}（/tmp/repo-$d.log）"
-    tail -5 "/tmp/repo-$d.log" | sed 's/^/      /'
+    # ⚠️⚠️ 这里**不能只 tail -5**。Run #30 实测：尾巴全是
+    #    `make[1] package/xxx/compile` + `build failed. Please re-run make with -j1 V=s`
+    #    这类无信息量的框架输出，**真正的编译错误埋在几百行之前**，
+    #    照着尾巴看根本无从下手。改成先抽 ERROR / Error N 上下文，
+    #    抽不到再退回 tail。
+    if ! grep -nE '(^|[^-])ERROR:|Error [0-9]+|No rule to make target|conflicts:' \
+         "/tmp/repo-$d.log" 2>/dev/null | head -6 | sed 's/^/      /' | grep -q .; then
+      tail -15 "/tmp/repo-$d.log" | sed 's/^/      /'
+    fi
     PB_FAIL=$((PB_FAIL+1))
+    PB_NAMES="$PB_NAMES $d"
   fi
 done
 if [ "$PB_FAIL" -gt 0 ]; then
-  warn "$PB_FAIL 个面板编译失败"
+  warn "$PB_FAIL 个面板编译失败：$PB_NAMES"
   warn "这是**预警**不是终止 —— 面板是可选的，固件本身不受影响"
+  # ⚠️ 但失败面板的影响要说明白：透明代理类面板（passwall / nikki / xray /
+  #    fchomo / openclash）是 kmod-nft-tproxy 的需求方，它们编不出来 →
+  #    这些 kmod 就不会被编 → 自建源里一个 kmod 都没有 → 第 6 步硬校验会
+  #    拒绝发布。Run #30 实测正是这个链条（165 个包、0 个 kmod）。
+  #    所以「面板编译失败」不是纯预警，它会直接拖垮自建源。
+  warn "⚠️ 其中透明代理类面板失败 → 连带 kmod 编不出来 → **自建源会发不出去**（第 6 步会拒绝）"
+  warn "   完整报错见 /tmp/repo-<面板名>.log（现在会抽 ERROR 行，比 tail 有用）"
 fi
 
 # ---- 4. 收包（扁平，检测重名冲突）--------------------------------------------
