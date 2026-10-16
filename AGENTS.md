@@ -1273,7 +1273,7 @@ Run #30 修完坑 19 后走得最远的一次：
 | 生成并签名索引 | ✅ | `索引 30994 字节`、`签名确实生效（与不签名的产物不同）` |
 | **发布** | ❌ | `kmod-nft-tproxy 不在源里` → 硬校验拒绝 |
 
-#### 发不出去的原因，以及为什么这未必是坏事
+#### 发不出去的原因
 
 ```
 固件内核: 6.12.108
@@ -1282,28 +1282,54 @@ Run #30 修完坑 19 后走得最远的一次：
 ❌ 硬校验未通过，拒绝发布（Pages 会保留上一版好内容）
 ```
 
-链条是：**12 个面板里 5 个在 ImmortalWrt 25.12 上编译失败 →
-它们是 kmod-nft-tproxy 的需求方 → 这些 kmod 不会被编 → 源里 0 个 kmod →
-硬校验拒绝发布。** 失败的 5 个恰好全是透明代理类：
+链条是：**12 个面板里 9 个压根没被发现成包 → 没进 `.config` →
+依赖的 kmod 不会被编 → 源里 0 个 kmod → 硬校验拒绝发布。**
+
+Run #31 日志里的直接证据：
 
 ```
-openwrt-passwall   openwrt-passwall2   OpenWrt-nikki-rs
-luci-app-xray      openwrt-fchomo
+⚠️  openwrt-passwall 里没找到 define Package/ —— 上游结构变了？
+⚠️  openwrt-passwall2 里没找到 define Package/
+⚠️  OpenWrt-nikki-rs 里没找到 define Package/
+⚠️  luci-app-openclash 里没找到 define Package/
+... 共 9 个
+✅ 共发现 5 个包定义
 ```
 
-这些面板是按 **OpenWrt mainline** 写的，我们在 **ImmortalWrt 25.12** 上。
-
-**关键判断：自建源对这个项目的实际需求没有价值。**
-
-| 需求 | 自建源必要吗 |
-|---|---|
-| 双 WAN / mwan3 | ❌ mwan3 明确**不打包进固件**，刷机后从 `dl12345/mwan3` 手动装 |
-| 无线预置 / LuCI 主题 | ❌ 已在固件里 |
-| 内核模块（kmod） | ❌ **官方镜像站就能装** —— 坑 14 已用 `add_kmods_feed()` 自动补官方 kmods 源 |
-
-也就是说，自建源**唯一的价值**是「kmod 与固件同 build root 产出、vermagic 100% 匹配」，
-而这个价值的前提是透明代理面板能编出来 —— 现在编不出来。
-而用户实际要的功能，官方源已经全部覆盖。
+> ### 🔴 2026-10-16 更正：**这不是上游不兼容，是我们自己的发现逻辑有 bug**
+>
+> 此前（本文件上一版）把原因写成「这些面板面向 OpenWrt mainline，
+> 在 25.12 上编不过」——**那是错的，是没查就下的结论**。
+> 本地克隆 `openwrt-passwall` 复现后，真相是：
+>
+> ```sh
+> # luci-app-passwall/Makefile
+> PKG_NAME:=luci-app-passwall          # 第 9 行
+> define Package/$(PKG_NAME)/config   # 第 40 行 —— 包名是个 make 变量
+> ```
+>
+> 而 `build-repo.sh` 的 `discover_pkgs()` 正则是：
+>
+> ```sh
+> grep -hoE '^[[:space:]]*define[[:space:]]+Package/[A-Za-z0-9._+-]+' "$mf"
+> ```
+>
+> `Package/` 后面要求 1 个以上 `[A-Za-z0-9._+-]`，而实际下一个字符是 `$` ——
+> **整行匹配不上，返回空**。9 个面板用的是 `Package/$(PKG_NAME)` 这种写法，
+> 于是全部「看不见」。
+>
+> 顺带一提：日志里那 5 个「编译失败」是**发现失败的后果**，不是独立的编译问题 ——
+> 没进 `.config`，`make package/<目录>/compile` 自然没有目标，
+> 失败得悄无声息（`/tmp/repo-*.log` 是空的）。
+>
+> **修法已本地验证可行**（`.sshhelper/test-discover-pkgs.sh`，
+> 用真实克隆的 passwall 仓库当样本）：正则放宽成
+> `Package/[^/[:space:]]+`，遇到 `$(VAR)` 时在**同一个 Makefile** 里
+> 解析该变量取值。字面名写法（mosdns 那种）不受影响。
+>
+> ⚠️ 但**修好发现 ≠ 面板就能编过**。这些面板从来没被真正编译过一次，
+> 能不能在 25.12 上编过目前**未知** —— 这才是需要投入才能回答的问题。
+> 按 2026-10-16 的决定，暂不投入；但别再把原因记成「上游不兼容」。
 
 > ✅ **一个好消息：fail-closed 机制按设计工作了。**
 > 硬校验没有因为「面板编译失败」就放水，而是老老实实因为「缺命门 kmod」拒绝发布，
@@ -1312,10 +1338,13 @@ luci-app-xray      openwrt-fchomo
 
 #### 如果将来要重新捡起这条线
 
-1. 先查 `kmod-nft-tproxy` 为什么没进 `bin/packages/aarch64_cortex-a53/` ——
-   是面板没编出来连带没编，还是 `.config` 里压根没有 `CONFIG_PACKAGE_kmod-nft-tproxy=m`。
-2. 面板编译的完整报错现在能抽出来了（`build-repo.sh` 已改用 grep ERROR 而非 `tail -5`）。
-3. 这些面板未必值得改成能编译 —— 它们本来就面向 mainline。
+1. **先应用发现逻辑的修复**（正则放宽 + 解析 `$(VAR)`），
+   修法与验证脚本见上文与 `.sshhelper/test-discover-pkgs.sh`。
+2. 修好之后面板才会**第一次真正被编译** —— 能不能在 25.12 上编过，
+   届时才知道。日志里现在能看到真实 ERROR 行了（`build-repo.sh` 已改用 grep 而非 `tail -5`）。
+3. 面板编译通过 → kmod 才会有 → 硬校验才可能放行。
+4. 如果面板确实编不过，那时再考虑：改用 `main` 分支（内核 6.18，面板更可能编过），
+   或者放弃自建源（官方 kmods 源已经能装，坑 14）。
 
 ### 7.2 ⛔ 阻塞项：GitHub 凭据
 
