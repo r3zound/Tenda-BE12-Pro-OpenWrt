@@ -35,8 +35,9 @@ fi
 export TENDA_BUILD_STAMP
 # ⚠️ ImmortalWrt 25.12 的 toplevel.mk 在顶层无条件执行
 #      REVISION:=$(shell scripts/getver.sh)
-#    makefile 赋值会覆盖环境变量，所以只 export REVISION 没用；下面的 make
-#    必须把它作为**命令行变量**传入（命令行 > makefile > 环境）。
+#    环境变量会被覆盖；命令行 REVISION 又会污染 base-files 的包版本
+#    （1954~$(REVISION 最后一个 - 段)），带点的时间戳会让 apk 拒包。
+#    正确解耦：REVISION 保持 getver.sh 原值，最终 make 只覆盖 VERSION_CODE。
 export REVISION="${REVISION:-$TENDA_BUILD_VERSION}"
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; CYN=$'\033[36m'; RST=$'\033[0m'
@@ -199,7 +200,7 @@ fi
 # ---- 6. 编译 ---------------------------------------------------------------
 step "编译固件（这会花很长时间）"
 echo "  提示：frp 是 Go 包，首次编译会额外拉取 Go 工具链"
-make -j"$JOBS" REVISION="$REVISION" VERSION_CODE="$REVISION" V=s || die "编译失败"
+make -j"$JOBS" VERSION_CODE="$REVISION" V=s || die "编译失败"
 
 # ---- 7. 记录构建信息 -------------------------------------------------------
 step "记录构建信息"

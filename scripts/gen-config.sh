@@ -55,10 +55,12 @@ fi
 #     REVISION:=$(shell $(TOPDIR)/scripts/getver.sh)
 # 而 makefile 里的赋值会覆盖**环境变量**。Run #33 实测：CI 的 env 里明明有
 # REVISION=git-313718c25f-20261017.1013，固件仍是 r0+38202-313718c25f。
-# 真正生效的方式是在 make 命令行上传：
-#     make REVISION="..." VERSION_CODE="..." ...
-# 命令行变量优先级高于 makefile 赋值。这里 export 只用于日志/子进程可见，
-# 不代表最终固件已经采用它；build.sh / build.yml 必须显式带命令行变量。
+# 真正生效的方式是在 make 命令行上传 `VERSION_CODE`。不要传带时间戳的
+# REVISION：base-files 的包版本会取 REVISION 最后一个 `-` 段，
+# `20261017.1148` 会让 apk 报 “package version is invalid”。
+# 正确解耦：REVISION 保持 getver.sh 原值（包版本合法），
+# VERSION_CODE 命令行覆盖（镜像的 %C / openwrt_version 用这个）。
+# 这里 export 只用于日志/子进程可见，不代表最终固件已经采用它。
 #
 # ⚠️ 时间戳在**构建机上算一次**然后烧死，不是开机时算 —— 设备时区是 CST-8
 #    但这里不该依赖它，否则改时区就得出两个版本号。
@@ -132,7 +134,7 @@ if grep -qE '^CONFIG_VERSION_CODE_FILENAMES=y$' .config; then
   exit 1
 fi
 echo "  ✅ CONFIG_VERSION_CODE_FILENAMES 未开启（文件名前缀交给 stamp-firmware.sh）"
-echo "  ℹ️  版本串不经过 .config，靠 make 命令行 REVISION/VERSION_CODE 注入"
+echo "  ℹ️  版本串不经过 .config，靠 make 命令行 VERSION_CODE 注入"
 
 # ⚠️ CCACHE_DIR 是 `string ... if CCACHE` —— CCACHE 不可见时会被 defconfig 删掉。
 #    而 CCACHE 本身在 `if DEVEL` 菜单块内，DEVEL=n 时连带 CCACHE_DIR 一起消失。

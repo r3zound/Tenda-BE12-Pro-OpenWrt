@@ -20,7 +20,7 @@
 | 项目根 | `/mnt/c/Users/LG/Documents/Codex/Tenda-BE12-Pro-OpenWrt/Tenda-BE12-Pro-OpenWrt` |
 | 数据目录 | 在项目根的**上级**（`.sshhelper/`、`.repo-keys/`、`固件/`、`备份/` 等） |
 | 构建 | GitHub Actions，约 90 分钟/轮，ccache 命中后 |
-| 固件现状 | 构建链路全绿，**最新固件尚未上机验证** |
+| 固件现状 | Run #35 因 base-files 包版本被时间戳污染而编译失败；已改成只传 `VERSION_CODE`，待 Run #36；**尚未上机验证** |
 
 ---
 
@@ -238,19 +238,24 @@ CI 全绿、`verify-firmware.sh` 的 60+ 项抽查全过，只有真正把 squas
 **2. 固件尚未上机验证** —— 构建全绿不等于设备可用。
 这是目前最高优先级的**业务**事项（技术侧已经收敛）。
 
-**3. 版本串仍未进固件（Run #33 已取证）**
+**3. 版本串注入：Run #33/#35 两次取证后已定位**
 
 Run #33 第 24 步「固件内容抽查」失败，但其余 60+ 项全过。环境的
 `REVISION=git-313718c25f-20261017.1013` 明明存在，固件里仍是
 `r0+38202-313718c25f`。真因是 ImmortalWrt 25.12 的顶层
 `toplevel.mk` 无条件执行 `REVISION:=$(shell getver.sh)`，
-**环境变量被 makefile 覆盖**；必须把 `REVISION` / `VERSION_CODE`
-作为 make 命令行变量传入。已修复 `build.yml` 和 `build.sh`，
-`test-guard-revision.sh` 用迷你 Makefile 复现了“环境变量输、命令行变量赢”。
+**环境变量被 makefile 覆盖**。
 
-Run #34（`1c2b3da`，03:16 UTC 启动）仍使用修复前的 make 调用，
-预计也会在版本抽查失败；它的用途是产出 `apk-repo-34` artifact，
-验证 kmod 收集。真正同时验版本 + kmod + 发布的应是 Run #35。
+Run #34（`1c2b3da`）同样使用修复前的 make 调用，已在编译阶段取消，
+避免重复消耗 runner。Run #35（`d85679b`）把命令行 REVISION 也传了进去，
+结果 `base-files-1954~20261017.1148.apk` 被 apk 判为非法版本（Error 99）：
+base-files 的包版本取 REVISION 最后一个 `-` 段，时间戳不能进 REVISION。
+
+最终修法是 **REVISION / VERSION_CODE 解耦**：
+REVISION 保持 getver 原值，最终 make 只传 `VERSION_CODE=时间戳`。
+`test-guard-revision.sh` 用迷你 Makefile 复现了三种情况：
+只 export 被覆盖、只传 VERSION_CODE 正确、同时传 REVISION 污染包版本。
+下一轮 Run #36 验证。
 
 ---
 
@@ -327,7 +332,7 @@ cmd /c "git credential fill < <协议文件>"   # 从凭据管理器读
 |---|---|
 | 坑 1 / 5 | 索引不到「根目录 Makefile」的仓库 → 主题全不在固件里，CI 全绿 |
 | 坑 9 | `uci set <包>.<段>=<值>` 是**赋类型**不是赋选项值 → 刷完 LAN 拿不到 IP |
-| 坑 15 / 21 | 版本时间戳：文件名和固件内版本串**必须**是同一个值；`GITHUB_ENV` 单向，且环境变量压不过 makefile，必须走 make 命令行变量 |
+| 坑 15 / 21 | 版本时间戳：文件名和固件内版本串**必须**是同一个值；只传 `VERSION_CODE`，不要把时间戳塞进 REVISION（会破坏 base-files 包版本） |
 | 坑 19 / 20 | 工具写窄了就等于「上游不兼容」；`set -e` 下守卫写在失败命令之后等于死代码 |
 
 **一条通用原则**（本项目 23 个坑的共同教训）：
@@ -344,8 +349,8 @@ cmd /c "git credential fill < <协议文件>"   # 从凭据管理器读
 - [ ] 读 `AGENTS.md`（至少 §0 §1 §5 §11）
 - [ ] 跑 `bash ../.sshhelper/check-migration.sh`，确认 FAIL=0
 - [ ] 确认 `git status --porcelain` 为空（工作树干净）
-- [ ] 查 Run #33 结果，验证坑 21 的修复（版本串是否带回时间戳）
+- [ ] 查 Run #36 结果，验证坑 21 的修复（版本串是否带回时间戳）
 - [ ] 验收坑 22：新源里 `kmods > 0`、`kmod-nft-tproxy` 在位
 - [ ] 验收坑 23：发布步骤失败必须非零；成功后 Pages 上能取到 `packages.adb`
-- [ ] 单独看 Run #33 的面板预编译结果（不再和 kmod 收集混为一谈）
+- [ ] 单独看 Run #36 的面板预编译结果（不再和 kmod 收集混为一谈）
 - [ ] 决定是否把固件刷到设备上做上机验证（目前最高优先级的业务事项）
