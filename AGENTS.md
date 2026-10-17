@@ -1519,7 +1519,7 @@ kmod 没被编」。Run #32 的产物证明这个归因不完整：`kmod-nft-tpr
 | 通用包收包 | ✅ | Run #32 收拢 183 个 `.apk` |
 | **目标包收包（坑 22）** | 🟡 本地已修 | 新逻辑同时收 `bin/targets/<board>/<sub>/packages/` |
 | 索引生成/签名 | ✅ | Run #30 索引 30994 字节，签名与不签名产物不同 |
-| **发布（坑 23）** | 🟡 本地已修 | 空目录不再静默退出；上传失败会硬拒绝“发布完成” |
+| **发布（坑 23）** | 🟡 本地已修 | 空目录不再静默退出；上传失败会硬拒绝“发布完成”；**仍缺跨仓库 PAT** |
 
 Run #32 的关键证据（不是推断）：
 
@@ -1550,6 +1550,7 @@ Run #32 的关键证据（不是推断）：
 |---|---|---|---|
 | 1 | `private-key.pem` → Actions secret `TENDO_REPO_PRIVATE_KEY` | 🔴 未配 | ✅ 已配（Run #29 首次拿到密钥对校验通过） |
 | 2 | GitHub PAT（`repo` + `workflow`） | 🔴 本机没有 | ✅ 已授权，scopes = `gist, repo, workflow` |
+| 3 | Actions secret `TENDO_REPO_TOKEN`（写 `r3zound/tenda-repo`） | 🔴 未配 | ⬜ **仍缺**；`github.token` 只作用于当前仓库，不能跨仓库发布 |
 
 > ⚠️ `git push` 卡住不动通常不是网络问题，是 **Git Credential Manager 在等授权弹窗**。
 > 绕开：`git -c credential.helper= push https://<TOKEN>@github.com/r3zound/Tenda-BE12-Pro-OpenWrt.git <branch>`

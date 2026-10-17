@@ -221,6 +221,10 @@ CI 全绿、`verify-firmware.sh` 的 60+ 项抽查全过，只有真正把 squas
 新逻辑同时收 arch 包和目标包。**下一轮 CI 的验收判据是 `kmods > 0` 且
 `kmod-nft-tproxy` 在源中。**
 
+发布到 Pages 仍缺 `TENDO_REPO_TOKEN`：`github.token` 只能写当前仓库，
+不能写 `r3zound/tenda-repo`。workflow 已改成缺 token 时明确失败，
+不会再把 403 伪装成发布成功。
+
 **面板能不能在 25.12 上编过是另一个独立问题。** 坑 20 已修好包名发现，
 Run #33 是第一次让这些面板真正进入编译；结果看第 25~27 步，不能再拿
 「kmod 缺失」反推面板状态。
@@ -254,7 +258,7 @@ diff -r files package/tenda-preset/files && echo "✅ 双份同步"
 bash ../.sshhelper/check-migration.sh    # 换机自检
 
 # 3. 拿到固件后，本地解开看内容（几分钟，不用等下一轮 CI）
-wsl.exe -d Ubuntu -- bash ../.sshhelper/verify-run<NN>-in-wsl.sh
+wsl.exe -d Ubuntu -- bash ../.sshhelper/verify-run-in-wsl.sh <NN>
 ```
 
 `.sshhelper/` 下还有这些现成脚本（**428 个，本机独有，git 里没有**），
@@ -265,8 +269,9 @@ wsl.exe -d Ubuntu -- bash ../.sshhelper/verify-run<NN>-in-wsl.sh
 | `retry-git.sh` | git fetch/push 重试 + 远端状态独立核实 |
 | `check-migration.sh` | 换机自检（8 项） |
 | `rssh.sh` / `rscp.sh` | 与路由器对话（`root@192.168.100.254`） |
-| `verify-*-in-wsl.sh` | WSL 里解开固件做内容抽查 |
+| `verify-run-in-wsl.sh <NN>` | 解开某轮固件，验 SHA256 / 版本戳 / 内容 |
 | `check-new-guards.sh`、`test-guard*.sh` | 坑 18/19/20/21 的守卫正反向验证 |
+| `test-collect-packages.sh` / `test-publish-failclosed.sh` | 坑 22/23 的收集与发布回归 |
 
 ---
 
@@ -276,6 +281,7 @@ wsl.exe -d Ubuntu -- bash ../.sshhelper/verify-run<NN>-in-wsl.sh
 |---|---|
 | GitHub token | ✅ 已授权，存于 Windows 凭据管理器（Git Credential Manager），scopes `gist, repo, workflow` |
 | Actions secret `TENDO_REPO_PRIVATE_KEY` | ✅ 已配（libsodium sealed box API 写入） |
+| Actions secret `TENDO_REPO_TOKEN` | 🔴 **未配** —— 必须能写 `r3zound/tenda-repo`；`github.token` 跨仓库无效 |
 | 代理 | `http://127.0.0.1:7897`（实测通） |
 
 **取 token（给 API 用）**：

@@ -517,11 +517,17 @@ jobs:
       - name: 发布自建源到 GitHub Pages
         if: steps.repokey.outputs.have_key == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # ⚠️ GitHub 自动签发的 github.token **只作用于当前仓库**，
+          #    不能写 r3zound/tenda-repo。必须使用能写目标仓库 Contents 的 PAT。
+          GH_TOKEN: ${{ secrets.TENDO_REPO_TOKEN }}
           REPO_BRANCH: ${{ startsWith(github.ref, 'refs/tags/') && 'tag' || github.ref_name }}
         run: |
           # ⚠️ 校验不过就不推：build-repo.sh 失败时本步骤直接跳过，
           #    Pages 上保留上一版好内容。推一半会让设备拉到索引却下不到包，比不推更糟。
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::缺少 secrets.TENDO_REPO_TOKEN —— github.token 无法写 r3zound/tenda-repo"
+            exit 1
+          fi
           [ -f apk-repo/packages.adb ] || { echo "::error::没有索引，拒绝发布"; exit 1; }
           ./scripts/publish-repo.sh ./apk-repo "$REPO_BRANCH" r3zound/tenda-repo
 
