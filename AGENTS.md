@@ -1569,6 +1569,9 @@ Run #32 的关键证据（不是推断）：
 | 2 | GitHub PAT（`repo` + `workflow`） | 🔴 本机没有 | ✅ 已授权，scopes = `gist, repo, workflow` |
 | 3 | Actions secret `TENDO_REPO_TOKEN`（写 `r3zound/tenda-repo`） | 🔴 未配 | ⬜ **仍缺**；`github.token` 只作用于当前仓库，不能跨仓库发布 |
 
+> 推荐 fine-grained PAT，仅授予 `r3zound/tenda-repo` 的
+> Contents: Read and write；不要复用范围过大的 classic PAT。
+
 > ⚠️ `git push` 卡住不动通常不是网络问题，是 **Git Credential Manager 在等授权弹窗**。
 > 绕开：`git -c credential.helper= push https://<TOKEN>@github.com/r3zound/Tenda-BE12-Pro-OpenWrt.git <branch>`
 >

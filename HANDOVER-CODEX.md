@@ -296,6 +296,11 @@ wsl.exe -d Ubuntu -- bash ../.sshhelper/verify-run-in-wsl.sh <NN>
 | Actions secret `TENDO_REPO_TOKEN` | 🔴 **未配** —— 必须能写 `r3zound/tenda-repo`；`github.token` 跨仓库无效 |
 | 代理 | `http://127.0.0.1:7897`（实测通） |
 
+`TENDO_REPO_TOKEN` 建议用 fine-grained PAT，只授予
+`r3zound/tenda-repo` 的 **Contents: Read and write**，不要复用范围过大的
+classic PAT。设置后跑 `gh secret set` 或 GitHub 网页
+Settings → Secrets and variables → Actions → New repository secret。
+
 **取 token（给 API 用）**：
 
 ```powershell
