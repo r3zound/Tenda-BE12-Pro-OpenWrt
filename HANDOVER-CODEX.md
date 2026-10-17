@@ -1,7 +1,8 @@
 # 交接文档 · 交给 Codex
 
 > 面向对象：在本机用 Codex CLI 接手本项目的 agent / 人。
-> 写作时间：2026-10-17 · 对应分支 `immortalwrt-25.12` · HEAD `7e136a6`
+> 写作时间：2026-10-17 · 对应分支 `immortalwrt-25.12` · 交接基线 HEAD `7e136a6`
+> （接手后的 kmod 收集 / 发布 fail-closed / 面板诊断修复见后续 `git log`）
 >
 > **本文不重复 `AGENTS.md`**（那是项目的完整技术档案，坑位清单 1~23 都在里面）。
 > 本文只讲三件 `AGENTS.md` 不会讲的事：
