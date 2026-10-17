@@ -1671,17 +1671,18 @@ OpenWrt-nikki-rs、luci-app-xray、openwrt-fchomo）。这就是面板本身的�
 
 | 项 | 值 |
 |----|----|
-| CI Run | [#28](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/38506029841)（2026-10-14，success） |
-| 提交 | `d656b12` |
-| 编译耗时 | 130.8 分钟（全冷编译，ccache 那轮刚修完，见坑 18） |
+| CI Run | [#36](https://github.com/r3zound/Tenda-BE12-Pro-OpenWrt/actions/runs/39005612920)（2026-10-17；固件步骤全过，源构建收尾 SIGPIPE 判失败） |
+| 提交 | `365e86a` |
+| 编译耗时 | 约 61 分钟（ccache 命中） |
 | 基线 | ImmortalWrt `openwrt-25.12` @ `313718c25f206cdeee399bdc6c002b7388c9a513` |
 | 内核 | **6.12**（`main` 分支是 6.18，两者 rootfs 结构不同，**固件不要混刷**） |
-| 固件 SHA256 | ⬜ **未记录** —— 需从 Run #28 artifact 下载后用 `sha256sums` 核对补录 |
-| Artifact | `tenda_be12-pro-immortalwrt-25.12-28`，保留 90 天 |
+| 固件版本 | `git-313718c25f-20261017.1317`（`/etc/openwrt_version` 已核对） |
+| 固件 SHA256 | `6885310679a7cd5fe2ec46290113d8c2172180ea761e9dab3341c83f65307cc5` |
+| Artifact | `tenda_be12-pro-immortalwrt-25.12-36`，保留 90 天 |
 
-> ⚠️ Run #28 的产物**只存在于 Actions Artifact**，仓库不分发固件二进制。
-> 补录校验值前，先确认设备上跑的到底是哪一版：
-> `cat /etc/openwrt_version`（应形如 `r1-<hash>-20261014.XXXX`）。
+> ⚠️ Run #36 的产物**只存在于 Actions Artifact**，仓库不分发固件二进制。
+> 固件内容与版本戳已本地复核通过；该轮整体结论仍为 failure，
+> 但失败只发生在第 27 步自建源收尾（`ls | head` SIGPIPE），固件本身可用。
 
 ### 8.2 历史（`main` 分支，OpenWrt SNAPSHOT / 内核 6.18）
 
