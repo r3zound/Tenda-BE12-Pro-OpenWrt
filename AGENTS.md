@@ -1375,6 +1375,22 @@ grep -hoE '^[[:space:]]*define[[:space:]]+Package/[A-Za-z0-9._+-]+' "$mf"
 另加合成用例覆盖「字面名 + 变量名 + 解析失败告警」三种情形。
 AGENTS.md §11 第 18 条守卫做了三种写坏方式的反向验证。
 
+#### 同一处的诊断 bug：找到 ERROR 反而不打印（2026-10-17）
+
+Run #32 的 5 个面板失败时，日志里只有“失败”两个字，没有任何 ERROR。
+原因是诊断代码把条件写反了：
+
+```sh
+# ❌ 找到 ERROR 时 grep -q 返回 0，整个 if ! ... 为假，反而不打印
+if ! grep ERROR "$log" | head -6 | grep -q .; then
+  tail -15 "$log"
+fi
+```
+
+现在抽成 `print_panel_error()`：**有 ERROR 就打印 ERROR 行，没有才退回 tail**。
+`.sshhelper/test-panel-diagnostics.sh` 从真实脚本抽取该函数，分别用
+“有 ERROR 的日志”和“只有框架尾巴的日志”验证两条路径。
+
 > ### 通用教训
 > **写公式/发现类工具时，拿真实的多种上游样本**跑一遍，
 > 至少要覆盖到那些「写法不一样但完全合法」的情况。
@@ -1968,6 +1984,14 @@ grep -nE 'var="\$\{name#\\\$\\?\}"' scripts/build-repo.sh \
 # 解析不出来必须出声，不能静默丢弃（那正是「面板不存在」的老问题）
 grep -q '解析不出值' scripts/build-repo.sh \
   || echo "❌ 变量解析失败没有告警 —— 会静默丢掉包定义（坑 20）"
+# 失败诊断：有 ERROR 必须打印 ERROR，不能反过来只在没 ERROR 时打印。
+grep -qF 'print_panel_error()' scripts/build-repo.sh \
+  || echo "❌ 面板失败诊断没有抽成 print_panel_error()"
+grep -qF 'if [ -n "$errs" ]; then' scripts/build-repo.sh \
+  || echo "❌ 面板诊断条件仍可能是反的（找到 ERROR 反而不打印）"
+bash ../.sshhelper/test-panel-diagnostics.sh >/dev/null 2>&1 \
+  && echo "  ok  面板 ERROR 诊断回归测试通过" \
+  || echo "❌ 面板 ERROR 诊断回归测试失败"
 
 # 19. 自建源必须同时收通用包和目标包（坑 22）
 # ⚠️ kmod 在 bin/targets/<board>/<sub>/packages/，不在 bin/packages/<arch>/。

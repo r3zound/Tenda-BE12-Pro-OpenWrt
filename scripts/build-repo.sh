@@ -252,6 +252,17 @@ ok "面板符号就位（丢失 $MISSING_M 个）"
 # ⚠️ 为什么要单独先编一遍（偷自 H5000M 的做法）：
 #    `make world` 里 package/luci-app-* 排在第 ~160 分钟，
 #    面板编译失败要等三小时才发现。提前编，失败只要十几分钟。
+print_panel_error() { # $1=编译日志
+  local errs
+  errs="$(grep -nE '(^|[^-])ERROR:|Error [0-9]+|No rule to make target|conflicts:' \
+       "$1" 2>/dev/null | head -6 || true)"
+  if [ -n "$errs" ]; then
+    printf '%s\n' "$errs" | sed 's/^/      /'
+  else
+    tail -15 "$1" | sed 's/^/      /'
+  fi
+}
+
 step "预编译面板"
 PB_FAIL=0
 PB_NAMES=""
@@ -267,10 +278,7 @@ for d in "${PANEL_DIRS[@]}"; do
     #    这类无信息量的框架输出，**真正的编译错误埋在几百行之前**，
     #    照着尾巴看根本无从下手。改成先抽 ERROR / Error N 上下文，
     #    抽不到再退回 tail。
-    if ! grep -nE '(^|[^-])ERROR:|Error [0-9]+|No rule to make target|conflicts:' \
-         "/tmp/repo-$d.log" 2>/dev/null | head -6 | sed 's/^/      /' | grep -q .; then
-      tail -15 "/tmp/repo-$d.log" | sed 's/^/      /'
-    fi
+    print_panel_error "/tmp/repo-$d.log"
     PB_FAIL=$((PB_FAIL+1))
     PB_NAMES="$PB_NAMES $d"
   fi
