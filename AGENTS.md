@@ -286,9 +286,9 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 
 ---
 
-## 5. ⚠️ 完整坑位清单（20 个，全部静默失败）
+## 5. ⚠️ 完整坑位清单（21 个，全部静默失败）
 
-**这二十个坑的共同点：链路上没有任何一个环节会报错。**
+**这二十一个坑的共同点：链路上没有任何一个环节会报错。**
 形态都是「编译成功 → CI 绿 → 守卫过 → 固件里东西是错的」。
 
 完整成因与解法见 `README.md` §13.2，这里只列速查：
@@ -315,6 +315,7 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 | 18 | **ccache 配了整套却从未生效** | 每轮全冷编译，缓存保存报 "Path not exist" | `CONFIG_DEVEL=y`（CCACHE 的门控） |
 | 19 | **`set -e` 让守卫变死代码** | 脚本**静默退出**，连 die 的提示都不打 | 命令替换补 `\|\| true`；空 glob 用 `find` 不用 `ls` |
 | 20 | **包名发现认不出 make 变量** | 9/12 个面板「不存在」，却只 warn 一句像上游不兼容 | 正则放宽到 `Package/[^/[:space:]]+`，`$(VAR)` 到同一 Makefile 解析 |
+| 21 | **REVISION 导出排在 eval 之前** | 文件名带戳、固件内版本串不带（坑 15 回归） | 挪到 `eval` 之后 + 空值保险丝 |
 
 > 坑 1~15 是 `main`（OpenWrt SNAPSHOT / 内核 6.18）线上踩的；
 > **坑 16~20 是 `immortalwrt-25.12`（内核 6.12）独有的**，成因不同，不要互相套用。
@@ -894,6 +895,69 @@ CI 里由 `scripts/build-stamp.sh` 算好后经 `$GITHUB_ENV` 传给后续所有
 **全程必须同一个值**，否则会出现「版本串写 00:31、文件名写 00:32」这种没法排查的错。
 
 
+### 坑 21：REVISION 导出排在 eval 之前 → 整个坑 15 的修复被自己抵消（2026-10-16）
+
+**坑 15 的回归。** 由「在 WSL 里解开 Run #32 固件直接看内容」发现 —— 这正是
+项目文档反复强调的做法（「CI 每次 90 分钟起步，别拿它当调试器」）。
+
+#### 症状：文件名带戳、版本串不带
+
+```
+文件名          immortalwrt-...-squashfs-sysupgrade-20261016.1437.bin   ← 有戳
+/etc/openwrt_version   r0+38202-313718c25f                               ← 没戳
+DISTRIB_DESCRIPTION    ImmortalWrt 25.12-SNAPSHOT r0+38202-313718c25f    ← 没戳
+```
+
+用户在 LuCI「系统」页看到的是 `ImmortalWrt 25.12-SNAPSHOT r0+38202-313718c25f`，
+**永远看不到构建时间** —— 坑 15 想解决的正是这个。
+
+#### 根因：一行写在 `eval` 之前
+
+`build.yml` 的「生成构建时间戳」步骤：
+
+```sh
+vals="$(./scripts/build-stamp.sh "$OPENWRT_SRC")"
+echo "$vals"
+echo "$vals" >> "$GITHUB_ENV"                    # ← 只对**后续步骤**生效
+echo "REVISION=$TENDA_BUILD_VERSION" >> "$GITHUB_ENV"   # ⛔ 此时变量还是空的
+eval "$(echo "$vals" | sed ...)"                 # ← 到这里才真正 export
+```
+
+**讽刺的是作者知道这个坑** —— 紧挨着的注释原话是：
+「上面是写到 GITHUB_ENV，**本步骤的 shell 里并没有这些变量**」（Run #20 的教训）。
+他用 `eval` 修好了**当前 shell 的打印**，却忘了 `REVISION` 那一行写进
+GITHUB_ENV 的是**空字符串**。
+
+而 GITHUB_ENV 对**后续所有步骤**生效 —— 包括真正编译固件那一步。
+于是 make 拿到 `REVISION=""`，退回 `getver.sh` 现场算出版本号，时间戳丢失。
+
+> **为什么文件名没事**：文件名后缀走的是 `TENDA_BUILD_STAMP`，
+> 那一步的 GITHUB_ENV 是对的。**两个值来自不同的机制，只坏了一个**，
+> 于是现象变成「一半对一半错」，比全错更难查。
+
+#### 修法
+
+把 `REVISION` 的导出挪到 `eval` **之后**，并加一道保险丝：
+`TENDA_BUILD_VERSION` 为空就当场 `exit 1`，别等到刷完机才发现。
+
+#### 验证
+
+`.sshhelper/test-guard-revision.sh` ——
+把新旧两种写法各跑一遍，**直接对比 GITHUB_ENV 的实际内容**：
+
+```
+旧写法（Run #32 用的）: REVISION=
+新写法（修好后）      : REVISION=git-313718c25f-20261016.1437
+```
+
+另加行序检查 + 保险丝存在性检查，三项全过。
+
+> ### 通用教训
+> **`GITHUB_ENV` 是单向的：写进去只对后续步骤生效，对当前 shell 无效。**
+> 「先写 GITHUB_ENV 再在本步骤里用同一个变量」这种写法，
+> 写出来永远是空值，而且**日志里看不出来** —— 只有当那个值
+> 本该出现在最终产物里的时候，才会以「产物少了个东西」的形式暴露出来。
+
 ### 坑 16：`tenda-preset` 漏装 wireless → 坑 10 的漏网分支（2026-10-13）
 
 `a2368a9` · 两个互相独立的 bug，都表现为「固件内容抽查失败」。
@@ -1237,10 +1301,28 @@ grep -hoE '^[[:space:]]*define[[:space:]]+Package/[A-Za-z0-9._+-]+' "$mf"
 AGENTS.md §11 第 18 条守卫做了三种写坏方式的反向验证。
 
 > ### 通用教训
-> **工具的正则太窄，会把「另一种合法写法」当成「不存在」。**
-> 而且它不会报错，只会少认几个 —— 然后你就会去怪上游。
-> 写「扫描/发现」类工具时，拿**真实的多种上游样本**跑一遍，
+> **写公式/发现类工具时，拿真实的多种上游样本**跑一遍，
 > 至少要覆盖到那些「写法不一样但完全合法」的情况。
+
+> ### ⚠️ 本机 WSL 是这个项目最被低估的工具
+>
+> `wsl.exe -d Ubuntu`（Ubuntu 26.04.1 LTS，自带 `unsquashfs 4.7.5`）能直接把
+> Actions 产物拉下来解开看内容，**几分钟出结论，不用等 90 分钟的 CI**。
+>
+> ```sh
+> # 下载产物后拼成脚本期望的目录结构，然后：
+> wsl.exe -d Ubuntu -- bash /mnt/c/.../.sshhelper/verify-run32-in-wsl.sh
+> ```
+>
+> **坑 21 就是这么发现的** —— CI 全绿、抽查脚本 60+ 项全过，
+> 但解开一看版本串没时间戳。`verify-firmware.sh` 自己有一条 warning
+> 写着「REVISION 未设置（本地跑抽查脚本时正常，CI 里必须有）」，
+> **千万别顺着这句话就放过**，它恰恰是线索。
+>
+> 注意：`sysupgrade.bin` 是 tar 包，squashfs 在里面的 `sysupgrade-*/root` 分片；
+> 且 **unsquashfs 解包成功也返回非 0**（坑 4），按产物判断而不是看退出码。
+> 传脚本要**写文件**再 `wsl.exe -d Ubuntu -- bash <路径>`，
+> PowerShell 内联传多行会被引号处理搞坏。
 
 ---
 

@@ -134,19 +134,38 @@ jobs:
           vals="$(./scripts/build-stamp.sh "$OPENWRT_SRC")"
           echo "$vals"
           echo "$vals" >> "$GITHUB_ENV"
+          # ⚠️ 上面写进 GITHUB_ENV 之后，**本步骤的 shell 里依然没有这些变量** ——
+          #    GITHUB_ENV 要下一个 step 才生效（Run #20 的教训）。
+          #    要在当前 shell 用，必须先 eval 一遍。
+          eval "$(echo "$vals" | sed 's/^\([A-Z_]*\)=\(.*\)$/export \1="\2"/')"
+
           # ⚠️⚠️ REVISION 必须一起导出 —— include/toplevel.mk:13 明确支持
           #    从环境注入 REVISION（源码注释说就是为了让递归 make 拿到它）。
           #    注入后 VERSION_CODE 会回退到它，/etc/openwrt_release 的
           #    DISTRIB_DESCRIPTION 才会带上我们的时间戳。
           #    ⚠️ 千万别改成往 .config 写 CONFIG_VERSION_CODE：那个符号在
           #    `if IMAGEOPT` 的不可见菜单块里，defconfig 会静默删掉（Run #20/#21）。
+          #
+          # ⛔⛔ 这一行**必须排在上面那个 eval 之后**（2026-10-16 修，坑 15 回归）。
+          #    之前它排在 eval **前面**，那时 $TENDA_BUILD_VERSION 还是空的，
+          #    于是 GITHUB_ENV 里写进去的是 `REVISION=`（空值）。
+          #    而 GITHUB_ENV 对**后续所有步骤**生效 —— 包括真正编译固件那一步，
+          #    它拿到的 REVISION 就是一个空字符串，make 于是退回 getver.sh，
+          #    版本串变成 `r0+38202-313718c25f`，**不带任何时间戳**。
+          #    症状极具迷惑性：.bin 文件名带戳（那个走 TENDA_BUILD_STAMP，是好的），
+          #    但用户在 LuCI「系统」页永远看不到构建时间。
+          #    实测（2026-10-17，本地在 WSL 里解开 Run #32 固件确认）：
+          #      文件名          immortalwrt-...-squashfs-sysupgrade-20261016.1437.bin  ← 有戳
+          #      openwrt_version r0+38202-313718c25f                                   ← 没戳
           echo "REVISION=$TENDA_BUILD_VERSION" >> "$GITHUB_ENV"
-          # ⚠️ 上面是写到 GITHUB_ENV，**本步骤的 shell 里并没有这些变量** ——
-          #    Run #20 里这行打出来是「LuCI 系统页会显示: OpenWrt SNAPSHOT 」（空的）。
-          #    要在当前 shell 用，必须自己 eval 一遍。
-          eval "$(echo "$vals" | sed 's/^\([A-Z_]*\)=\(.*\)$/export \1="\2"/')"
+
           echo "  LuCI 系统页会显示: OpenWrt SNAPSHOT $TENDA_BUILD_VERSION"
           echo "  .bin 文件名会变成: ...-squashfs-sysupgrade-$TENDA_BUILD_STAMP.bin"
+          # 保险丝：REVISION 为空就当场停，别等到刷完机才发现版本串没戳
+          if [ -z "$TENDA_BUILD_VERSION" ]; then
+            echo "::error::REVISION 导出成了空值，版本串不会带时间戳（坑 15）"
+            exit 1
+          fi
           case "$TENDA_BUILD_REV" in
             r[0-9]*-[0-9a-f]*) echo "  ✅ revision 来自 getver.sh: $TENDA_BUILD_REV" ;;
             git-*)           echo "  ⚠️ 没能用上 getver.sh，退回短 hash: $TENDA_BUILD_REV" ;;
