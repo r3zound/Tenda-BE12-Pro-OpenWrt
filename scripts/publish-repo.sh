@@ -37,9 +37,14 @@ fi
 [ -n "$tok" ] || die "拿不到 GitHub 凭据（设 GH_TOKEN，或在本地用 git credential）"
 
 api() { # $1=method $2=url $3=body
-  curl -s -X "$1" -H "Authorization: token $tok" \
-       -H "Accept: application/vnd.github+json" -H "User-Agent: tenda-publish" \
-       ${3:+-H "Content-Type: application/json" -d "$3"} "$2"
+  if [ -n "${3:-}" ]; then
+    curl -s -X "$1" -H "Authorization: token $tok" \
+         -H "Accept: application/vnd.github+json" -H "User-Agent: tenda-publish" \
+         -H "Content-Type: application/json" -d "$3" "$2"
+  else
+    curl -s -X "$1" -H "Authorization: token $tok" \
+         -H "Accept: application/vnd.github+json" -H "User-Agent: tenda-publish" "$2"
+  fi
 }
 
 # ---- 目标路径 ---------------------------------------------------------------
@@ -56,6 +61,7 @@ echo "  读取远端文件列表…"
 list="$(api GET "$API/$DIR")" || die "读远端目录失败"
 names="$(echo "$list" | grep -oE '"name":\s*"[^"]+"' | tr -d ' ' | cut -d'"' -f4 || true)"
 
+PUT_FAIL=0
 put() { # $1=文件名
   f="$SRC/$1"
   [ -f "$f" ] || return 0
@@ -79,7 +85,7 @@ put() { # $1=文件名
   case "$code" in
     200|201) printf "  %s✓%s %s\n" "$GRN" "$RST" "$1" ;;
     422) warn "$1 被拒（HTTP 422）—— 通常是 sha 提取失败，检查下面的响应"; head -c 200 /tmp/pr.out; echo ;;
-    *)   warn "$1 上传失败 HTTP $code" ;;
+    *)   warn "$1 上传失败 HTTP $code"; PUT_FAIL=$((PUT_FAIL+1)) ;;
   esac
 }
 
@@ -103,6 +109,11 @@ ok "共处理 $cnt 个包"
 
 # ---- 4. BUILD-INFO ----------------------------------------------------------
 put BUILD-INFO.txt
+
+# ⚠️ 上传失败不能只 warn 后继续打印「发布完成」。
+#    Contents API 遇到 401/403/429/5xx 时，旧逻辑会留下一个缺包的远端，
+#    而 CI 步骤仍然绿；设备看到的正是「索引有、包下载不到」。
+[ "$PUT_FAIL" -eq 0 ] || die "$PUT_FAIL 个文件上传失败，拒绝宣布发布完成"
 
 # ---- 5. 启用 Pages ----------------------------------------------------------
 echo
