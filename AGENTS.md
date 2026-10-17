@@ -24,7 +24,7 @@
 | **开发分支** | **`immortalwrt-25.12`**（= GitHub 默认分支）· `main` = OpenWrt SNAPSHOT 线，非默认 |
 | **基线** | **ImmortalWrt `openwrt-25.12`**，commit `313718c25f206cdeee399bdc6c002b7388c9a513`（锁 SHA，不锁分支名） |
 | **目标** | `mediatek/filogic` / `tenda_be12-pro`（MT7987A，512MB DDR4，128MB SPI-NAND） |
-| **当前状态** | 🟡 Run #33/#35 已定位版本注入的两层问题；最终改为只传 `VERSION_CODE`，待 Run #36 验证；坑 22/23 也待同一轮验收；⬜ **新固件尚未上机验证** |
+| **当前状态** | ✅ Run #36 固件内容/版本抽查全过；✅ 自建源已建成 281 包 / 82 kmod；🟡 收尾 SIGPIPE 已修，待配 token 后发布；⬜ **新固件尚未上机验证** |
 | **最新成功 CI** | Run #30（`6ee6254`，2026-10-16）—— 固件全绿，**自建源因缺 kmod 拒绝发布**（见 §7.1） |
 | **编译耗时** | **1h41m**（Run #30，ccache 命中后）· 冷构建 3h13m（Run #29） |
 | **CI 触发** | 手动 `workflow_dispatch` / 推 tag / 每周定时。**⛔ 推分支不触发构建**（见下） |
@@ -1344,6 +1344,14 @@ grep 找不到 → 返回 1 → `pipefail` 冒泡 → **赋值语句 `ARCH="$(�
 发现逻辑选中正确目录、不误选 `base/luci/routing`；
 ③ 对比验证 `ls` 写法**静默退出**、`find` 写法**正确走 die**。
 
+> ### 2026-10-17 追加：`ls | head` 的 SIGPIPE 也能把成功的步骤判失败
+>
+> Run #36 已经建好自建源：**281 个包、82 个 kmod、`kmod-nft-tproxy` 在位，
+> 硬校验全过**。但脚本最后一行 `ls -1 "$OUT" | head -15` 让 `head` 提前关闭管道，
+> `ls` 收到 SIGPIPE，`pipefail` 把整条管道判成失败，构建步骤 exit 2。
+> 改成 `find ... | sort | sed -n '1,15p'`（`sed` 会读完整条管道）。
+> `test-build-repo-fix.sh` 新增了这条 SIGPIPE 回归。
+
 > ⚠️ 同一轮还暴露一个「绿灯证明不了任何事」的新例子：
 > 第 28 步「上传自建源产物」显示 **success**，但 artifact 列表里
 > **根本没有 `apk-repo-29`** —— 因为 `if-no-files-found: warn` 让它空跑过去了。
@@ -1559,8 +1567,8 @@ kmod 没被编」。Run #32 的产物证明这个归因不完整：`kmod-nft-tpr
 | 拉取面板仓库 | ✅ | 12 个仓库，1 个不可用（clash-rs 无 Makefile） |
 | 包名发现（坑 20） | ✅ | 6 个真实样本，3 个从失明恢复，3 个无回归 |
 | 通用包收包 | ✅ | Run #32 收拢 183 个 `.apk` |
-| **目标包收包（坑 22）** | 🟡 本地已修 | 新逻辑同时收 `bin/targets/<board>/<sub>/packages/` |
-| 索引生成/签名 | ✅ | Run #30 索引 30994 字节，签名与不签名产物不同 |
+| **目标包收包（坑 22）** | ✅ | Run #36：281 个包、**82 个 kmod**、`kmod-nft-tproxy` 在位 |
+| 索引生成/签名 | ✅ | Run #36：索引 48168 字节，签名生效 |
 | **发布（坑 23）** | 🟡 本地已修 | 空目录不再静默退出；上传失败会硬拒绝“发布完成”；**仍缺跨仓库 PAT** |
 
 Run #32 的关键证据（不是推断）：
@@ -1570,20 +1578,16 @@ Run #32 的关键证据（不是推断）：
 - 完整日志里有 `apk mkpkg ... --output .../kmod-nft-tproxy-6.12.108-r1.apk`；
 - 但收包日志是 `收拢 183 个 .apk`，随后 `检查了 0 个 kmod`。
 
-**面板编译结果仍然是独立的未知项。** Run #31 的“9 个面板没找到 define Package/”
-已经由坑 20 修复。但 Run #33 在第 24 步版本抽查失败，第 25~27 步被**跳过**，
-所以面板的真实编译错误还没有拿到；要等版本修复后的下一轮，不能再用
-「kmod 缺失」反推面板状态。
+**面板编译结果：Run #36 仍有 5 个失败**（openwrt-passwall、passwall2、
+OpenWrt-nikki-rs、luci-app-xray、openwrt-fchomo）。这就是面板本身的编译问题，
+与 kmod 无关 —— 同一轮仍收到 82 个 kmod 并通过硬校验。
 
 **下一步**：
 
-1. Run #33/#35 已证伪“export REVISION 就够”和“命令行 REVISION 也能传”；
-   最终 make 只覆盖 VERSION_CODE，等 Run #36 验 `/etc/openwrt_version`；
-2. 从 Run #36 的 `apk-repo-36` artifact 验收 `kmods > 0` 且
-   `kmod-nft-tproxy` 在源中；
-3. 面板即使编不过，只要 kmod 收集正确，自建源的命门就已经打通；
-   面板缺失单独处理，不再阻断源发布；
-4. Pages 发布成功后，再决定是否把源地址固化进固件。
+1. 版本串/固件抽查已在 Run #36 通过，`/etc/openwrt_version` 带时间戳；
+2. 自建源内容已在 `apk-repo-36` artifact 验证：281 包 / 82 kmod / 签名生效；
+3. 修掉收尾 `ls | head` SIGPIPE 后，配 `TENDO_REPO_TOKEN` 跑 Run #37 发布；
+4. 5 个面板失败单独处理，不再阻断源发布。
 
 ### 7.2 ⛔ 阻塞项：GitHub 凭据
 
@@ -2013,6 +2017,9 @@ fi
 # ls 空 glob 返回 2，是 Run #27 / 坑 15 的地雷，别在可能匹配不到的地方用
 grep -nE '^[[:space:]]*[^#].*ls -1 [^|]*\*\.[a-z]+.*\| *wc -l' scripts/*.sh \
   && echo "❌ 还在用 ls 统计可能为空的 glob（坑 15 + 坑 19）"
+# ls | head 也会 SIGPIPE：head 提前关闭管道，pipefail 把成功步骤判成失败
+grep -vE '^[[:space:]]*#' scripts/build-repo.sh | grep -nE 'ls .*\| *head' \
+  && echo "❌ 还在用 ls | head，Run #36 的 SIGPIPE 会让成功步骤 exit 2"
 # 包集目录名不再从 kconfig 猜（CONFIG_TARGET_ARCH_PKGSET 在 25.12 已不存在）
 grep -nE '^[[:space:]]*[^#].*CONFIG_TARGET_ARCH_PKGSET' scripts/build-repo.sh \
   && echo "❌ build-repo.sh 还在读 CONFIG_TARGET_ARCH_PKGSET（25.12 里 0 命中，坑 19）"

@@ -20,7 +20,7 @@
 | 项目根 | `/mnt/c/Users/LG/Documents/Codex/Tenda-BE12-Pro-OpenWrt/Tenda-BE12-Pro-OpenWrt` |
 | 数据目录 | 在项目根的**上级**（`.sshhelper/`、`.repo-keys/`、`固件/`、`备份/` 等） |
 | 构建 | GitHub Actions，约 90 分钟/轮，ccache 命中后 |
-| 固件现状 | Run #35 因 base-files 包版本被时间戳污染而编译失败；已改成只传 `VERSION_CODE`，待 Run #36；**尚未上机验证** |
+| 固件现状 | **Run #36 固件内容/版本抽查全过**；自建源已建成 281 包 / 82 kmod；SIGPIPE 已修，待 token 后发布；**尚未上机验证** |
 
 ---
 
@@ -199,10 +199,12 @@ CI 全绿、`verify-firmware.sh` 的 60+ 项抽查全过，只有真正把 squas
 | #31 | `6ee6254` | 75 min | 28.06% | 滚动缓存 key 生效；坑 19 修复生效 |
 | #32 | `88ae33d` | 93 min | **34.28%** | 包名发现修复生效（5→15 个包定义） |
 | #33 | `48b8fbe` | 88 min | — | 固件编出；**内容抽查因版本串无时间戳失败** |
+| #35 | `d85679b` | 81 min | — | 命令行 REVISION 污染 base-files 包版本，编译失败 |
+| #36 | `365e86a` | 60 min | — | ✅ 固件/版本抽查全过；源 281 包/82 kmod；收尾 SIGPIPE exit 2 |
 
 - ✅ ccache 真正生效：数据落盘、恢复命中、持续更新
 - ✅ 签名密钥 secret 已配，密钥对校验通过
-- ⚠️ `verify-firmware.sh` 除版本标识外 60+ 项全过；版本戳仍是未解项，见下
+- ✅ Run #36 `verify-firmware.sh` 全过，版本串带时间戳
 - ✅ 坑 20 修复：包名发现认得出 `define Package/$(VAR)` 写法
 
 ### ⬜ 还开着的事
@@ -255,7 +257,14 @@ base-files 的包版本取 REVISION 最后一个 `-` 段，时间戳不能进 RE
 REVISION 保持 getver 原值，最终 make 只传 `VERSION_CODE=时间戳`。
 `test-guard-revision.sh` 用迷你 Makefile 复现了三种情况：
 只 export 被覆盖、只传 VERSION_CODE 正确、同时传 REVISION 污染包版本。
-下一轮 Run #36 验证。
+
+Run #36 验证通过：`/etc/openwrt_version = git-313718c25f-20261017.1317`，
+`DISTRIB_DESCRIPTION` 也带同一时间戳，`verify-firmware.sh` 全过。
+
+**Run #36 的自建源也建成了**：281 个包、82 个 kmod、`kmod-nft-tproxy` 在位、
+签名生效、硬校验全过。第 27 步最后仍 exit 2，原因是收尾的
+`ls -1 "$OUT" | head -15` 触发 SIGPIPE；已改成 `find | sort | sed -n`，
+已本地回归。发布还需要 `TENDO_REPO_TOKEN`，见下。
 
 ---
 
@@ -349,8 +358,8 @@ cmd /c "git credential fill < <协议文件>"   # 从凭据管理器读
 - [ ] 读 `AGENTS.md`（至少 §0 §1 §5 §11）
 - [ ] 跑 `bash ../.sshhelper/check-migration.sh`，确认 FAIL=0
 - [ ] 确认 `git status --porcelain` 为空（工作树干净）
-- [ ] 查 Run #36 结果，验证坑 21 的修复（版本串是否带回时间戳）
-- [ ] 验收坑 22：新源里 `kmods > 0`、`kmod-nft-tproxy` 在位
-- [ ] 验收坑 23：发布步骤失败必须非零；成功后 Pages 上能取到 `packages.adb`
-- [ ] 单独看 Run #36 的面板预编译结果（不再和 kmod 收集混为一谈）
+- [x] Run #36：版本串/固件内容抽查已通过
+- [x] 坑 22：Run #36 artifact 实测 281 包 / 82 kmod / `kmod-nft-tproxy` 在位
+- [ ] 配 `TENDO_REPO_TOKEN` 后跑 Run #37，验收 Pages 上能取到 `packages.adb`
+- [ ] 面板仍有 5 个编译失败（passwall/passwall2/nikki/xray/fchomo），单独处理
 - [ ] 决定是否把固件刷到设备上做上机验证（目前最高优先级的业务事项）

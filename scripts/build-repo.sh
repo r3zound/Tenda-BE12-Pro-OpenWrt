@@ -286,12 +286,11 @@ done
 if [ "$PB_FAIL" -gt 0 ]; then
   warn "$PB_FAIL 个面板编译失败：$PB_NAMES"
   warn "这是**预警**不是终止 —— 面板是可选的，固件本身不受影响"
-  # ⚠️ 但失败面板的影响要说明白：透明代理类面板（passwall / nikki / xray /
-  #    fchomo / openclash）是 kmod-nft-tproxy 的需求方，它们编不出来 →
-  #    这些 kmod 就不会被编 → 自建源里一个 kmod 都没有 → 第 6 步硬校验会
-  #    拒绝发布。Run #30 实测正是这个链条（165 个包、0 个 kmod）。
-  #    所以「面板编译失败」不是纯预警，它会直接拖垮自建源。
-  warn "⚠️ 其中透明代理类面板失败 → 连带 kmod 编不出来 → **自建源会发不出去**（第 6 步会拒绝）"
+  # ⚠️ 2026-10-17 更正：面板失败不代表 kmod 没编。kmod-nft-tproxy 由
+  #    base.config 显式 =y，固件构建阶段已经产出；Run #36 在面板失败的同时
+  #    仍从 target packages 收到 82 个 kmod。面板缺失只影响该面板本身，
+  #    不再把它和自建源能否发布绑在一起。
+  warn "⚠️ 面板本身缺包；kmod 仍会从 bin/targets/.../packages/ 正常收集"
   warn "   完整报错见 /tmp/repo-<面板名>.log（现在会抽 ERROR 行，比 tail 有用）"
 fi
 
@@ -550,7 +549,10 @@ echo "${GRN}  自建源就绪${RST}"
 echo "${GRN}═══════════════════════════════════════════════════════════${RST}"
 echo "  输出: $OUT"
 echo "  包数: $CPCOUNT   kmod: $KMODN   内核: $KVER"
-ls -1 "$OUT" | head -15 | sed 's/^/    /'
+# ⚠️ 不要写 `ls -1 "$OUT" | head -15`：head 提前关闭管道后 ls 收到 SIGPIPE，
+#    在 set -o pipefail 下整条管道返回 2 —— 源已经建好，却在最后一行被判失败。
+#    Run #36 实测 281 个包、82 个 kmod、硬校验全过，最后死在这个收尾打印上。
+find "$OUT" -maxdepth 1 -type f -printf '%f\n' | sort | sed -n '1,15p' | sed 's/^/    /'
 echo "    ..."
 echo
 echo "  ${YEL}下一步：publish-repo.sh 把这个目录推到 GitHub Pages${RST}"
