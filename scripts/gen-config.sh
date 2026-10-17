@@ -35,7 +35,7 @@ if [ ! -d "$FILES_DIR/etc" ]; then
 fi
 
 # ---- 版本标识：把编译时间（北京时间）烧进固件 --------------------------------
-# ⚠️⚠️ 走的是 **REVISION 环境变量**，不是 CONFIG_VERSION_CODE。
+# ⚠️⚠️ 不要往 .config 写 CONFIG_VERSION_CODE；但**只 export REVISION 也不够**。
 #
 # 为什么（Run #20 / #21 连栽两次才搞明白）：
 #   /etc/openwrt_release 的 DISTRIB_DESCRIPTION='%D %V %C'，
@@ -51,17 +51,14 @@ fi
 #         "# configuration written to .config"，一切看着正常。
 #   （Run #21 打印出来的 .config 实际内容就只有那一行 is not set。）
 #
-# 正确入口是 include/toplevel.mk:13：
-#   else ifeq (…$(origin REVISION)…, …environmentenvironment)
-#     # Recursive calls of the top-level Makefile get both from its environment.
-#   else
+# ImmortalWrt 25.12 的 include/toplevel.mk 顶层（MAKELEVEL=0）无条件执行：
 #     REVISION:=$(shell $(TOPDIR)/scripts/getver.sh)
-#   export REVISION
-#
-# 也就是说 **REVISION 可以从环境注入**，源码注释明说就是为了让递归 make 拿到它。
-# 注入后 VERSION_CODE := $(if $(VERSION_CODE),$(VERSION_CODE),$(REVISION))
-# 会用上我们的值 → DISTRIB_DESCRIPTION / DISTRIB_REVISION / openwrt_version 全对。
-# 附带好处：完全不碰 kconfig，就没有「defconfig 会不会把它吃掉」的问题。
+# 而 makefile 里的赋值会覆盖**环境变量**。Run #33 实测：CI 的 env 里明明有
+# REVISION=git-313718c25f-20261017.1013，固件仍是 r0+38202-313718c25f。
+# 真正生效的方式是在 make 命令行上传：
+#     make REVISION="..." VERSION_CODE="..." ...
+# 命令行变量优先级高于 makefile 赋值。这里 export 只用于日志/子进程可见，
+# 不代表最终固件已经采用它；build.sh / build.yml 必须显式带命令行变量。
 #
 # ⚠️ 时间戳在**构建机上算一次**然后烧死，不是开机时算 —— 设备时区是 CST-8
 #    但这里不该依赖它，否则改时区就得出两个版本号。
@@ -75,7 +72,7 @@ if [ -z "${TENDA_BUILD_VERSION:-}" ]; then
 fi
 
 export REVISION="${REVISION:-$TENDA_BUILD_VERSION}"
-echo "▸ 版本标识（经 REVISION 环境变量注入）"
+echo "▸ 版本标识（最终由 make 命令行变量注入）"
 echo "  REVISION = $REVISION"
 echo "  LuCI 系统页会显示: OpenWrt SNAPSHOT $REVISION"
 
@@ -135,7 +132,7 @@ if grep -qE '^CONFIG_VERSION_CODE_FILENAMES=y$' .config; then
   exit 1
 fi
 echo "  ✅ CONFIG_VERSION_CODE_FILENAMES 未开启（文件名前缀交给 stamp-firmware.sh）"
-echo "  ℹ️  版本串不经过 .config，靠 REVISION 注入，最终由 verify-firmware.sh 校验"
+echo "  ℹ️  版本串不经过 .config，靠 make 命令行 REVISION/VERSION_CODE 注入"
 
 # ⚠️ CCACHE_DIR 是 `string ... if CCACHE` —— CCACHE 不可见时会被 defconfig 删掉。
 #    而 CCACHE 本身在 `if DEVEL` 菜单块内，DEVEL=n 时连带 CCACHE_DIR 一起消失。

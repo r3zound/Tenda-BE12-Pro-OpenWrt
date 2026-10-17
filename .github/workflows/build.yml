@@ -373,7 +373,13 @@ jobs:
           #    实际 artifact 里只有 8 个 BL2 preload，**一个 sysupgrade 镜像都没有**。
           #    是下一步 stamp-firmware.sh 的回读校验把它拦下来的。
           #    （同一个文件 371 行的体积守卫早就用了 PIPESTATUS，这里是不一致。）
-          make -j$(nproc) V=s 2>&1 | tee /tmp/build.log
+          # ⚠️⚠️ REVISION 必须作为 **make 命令行变量**传进去。
+          #    ImmortalWrt 25.12 的 include/toplevel.mk 顶层无条件执行
+          #      REVISION:=$(shell scripts/getver.sh)
+          #    makefile 里的赋值会覆盖**环境变量**，所以只 export / 只写
+          #    GITHUB_ENV 都会被 getver.sh 顶掉，固件仍是 r0+...。
+          #    命令行变量优先级高于 makefile 赋值，才能真的改变版本串。
+          make -j$(nproc) REVISION="$TENDA_BUILD_VERSION" VERSION_CODE="$TENDA_BUILD_VERSION" V=s 2>&1 | tee /tmp/build.log
           rc=${PIPESTATUS[0]}
           if [ "$rc" -ne 0 ]; then
             echo ""

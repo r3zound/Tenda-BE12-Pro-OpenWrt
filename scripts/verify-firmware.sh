@@ -138,7 +138,7 @@ EOF
 #      写 CONFIG_VERSIONOPT=y → 也被 defconfig 改写成 "is not set"
 #    因为那个菜单块是 `if IMAGEOPT` 的，IMAGEOPT 不开就是不可见的，
 #    不可见的 bool 会被强制回默认值，而日志里一切看着正常。
-#    现在改走 REVISION 环境变量（include/toplevel.mk:13 官方支持），
+  #    现在最终 make 传命令行 REVISION/VERSION_CODE（环境变量会被 toplevel.mk 覆盖），
 #    产物只能到这里验 —— 而且这里验的正是**用户会看到的那一串**。
 echo
 echo "  ${CYN}【版本标识】${RST}"
@@ -167,7 +167,7 @@ else
   fi
   # 反向：不能只剩光秃秃的 git revision，说明 REVISION 没注入成功
   if grep -qE "DISTRIB_DESCRIPTION='[^']*SNAPSHOT r[0-9]+-[0-9a-f]+'$" "$REL" 2>/dev/null; then
-    bad_ "版本串只有上游 revision，没有我们的时间戳 —— REVISION 注入失败"
+    bad_ "版本串只有上游 revision，没有我们的时间戳 —— 版本注入失败"
   fi
   # 文件名前后缀不能撞车：IMG_PREFIX_VERCODE 生效时文件里会出现两段日期
   if grep -qE "[0-9]{8}\.[0-9]{4}-.*-[0-9]{8}\.[0-9]{4}" "$REL" 2>/dev/null; then

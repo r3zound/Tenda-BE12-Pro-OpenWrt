@@ -315,7 +315,7 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 | 18 | **ccache 配了整套却从未生效** | 每轮全冷编译，缓存保存报 "Path not exist" | `CONFIG_DEVEL=y`（CCACHE 的门控） |
 | 19 | **`set -e` 让守卫变死代码** | 脚本**静默退出**，连 die 的提示都不打 | 命令替换补 `\|\| true`；空 glob 用 `find` 不用 `ls` |
 | 20 | **包名发现认不出 make 变量** | 9/12 个面板「不存在」，却只 warn 一句像上游不兼容 | 正则放宽到 `Package/[^/[:space:]]+`，`$(VAR)` 到同一 Makefile 解析 |
-| 21 | **REVISION 导出排在 eval 之前** | 文件名带戳、固件内版本串不带（坑 15 回归） | 挪到 `eval` 之后 + 空值保险丝 |
+| 21 | **版本串只 export，被顶层 makefile 覆盖** | 文件名带戳、固件内版本串不带（坑 15 回归） | `make REVISION=... VERSION_CODE=...` 用命令行变量注入 |
 | 22 | **自建源只收 `bin/packages/`** | 收拢 183 个包、**0 个 kmod**，硬校验拒绝发布 | 同时收 `bin/targets/<board>/<sub>/packages/`（kmod 在这里） |
 | 23 | **发布脚本空目录静默退出** | `tenda-repo` 永远只有 README，Pages 空；上传失败也只 warning | grep 补 `\|\| true`；上传失败计数并硬拒绝发布 |
 
@@ -775,7 +775,7 @@ LuCI「系统 → 系统」显示的就是它。`%C` 来自 **`CONFIG_VERSION_CO
 `CONFIG_VERSION_CODE` 是 OpenWrt 官方留给二次编译方的字段，**同一次构建内**
 还会写进 `/etc/openwrt_version`。
 
-#### 版本串怎么挂上去的 —— 别再写 .config，走 REVISION 环境变量
+#### 版本串怎么挂上去的 —— 别再写 .config，最终用 make 命令行变量
 
 `/etc/openwrt_release` 的模板是：
 
@@ -809,28 +809,32 @@ menuconfig VERSIONOPT
 而日志里照样打印 `# configuration written to .config`，**一切看着正常**。
 Run #21 打印出来的实际 `.config` 里就只有那一行 `is not set`。
 
-#### 正确入口：`REVISION` 环境变量
+#### 正确入口：make 命令行 `REVISION` / `VERSION_CODE`
 
-`include/toplevel.mk:13-20` 明确支持：
+ImmortalWrt 25.12 的 `include/toplevel.mk` 在顶层**无条件**执行：
 
 ```make
-else ifeq ($(filter-out 0,$(MAKELEVEL))$(origin REVISION)$(origin SOURCE_DATE_EPOCH),$(MAKELEVEL)environmentenvironment)
-  # Recursive calls of the top-level Makefile get both from its environment.
-else
-  REVISION:=$(shell $(TOPDIR)/scripts/getver.sh)
+REVISION:=$(shell $(TOPDIR)/scripts/getver.sh)
 export REVISION
 ```
 
-所以只要 `export REVISION="r1-xxx-20261004.0031"`，
-`VERSION_CODE` 就会回退到它，`DISTRIB_DESCRIPTION` / `DISTRIB_REVISION` /
-`/etc/openwrt_version` 全部正确。**完全不碰 kconfig**，也就没有
+因此 `export REVISION=...` 或写 `GITHUB_ENV` 都会被这个 makefile 赋值覆盖
+（GNU make：命令行 > makefile > 环境）。**必须作为命令行变量传给最终 make**：
+
+```sh
+make -j... REVISION="$TENDA_BUILD_VERSION" VERSION_CODE="$TENDA_BUILD_VERSION" V=s
+```
+
+这样 `include/version.mk` 的
+`VERSION_CODE := $(if $(VERSION_CODE),$(VERSION_CODE),$(REVISION))`
+会拿到同一个值，`DISTRIB_DESCRIPTION` / `DISTRIB_REVISION` /
+`/etc/openwrt_version` 才全部正确。**完全不碰 kconfig**，也就没有
 「defconfig 会不会把它吃掉」的问题。
 
 三个落地要点：
 
-- CI 里经 `$GITHUB_ENV` 导出 `REVISION=$TENDA_BUILD_VERSION`
-- **`build.sh` 必须在它自己这一层 export** —— `gen-config.sh` 是子进程，
-  它 export 出来的变量回不到父进程，而后面的 `make` 是父进程调的
+- CI 的最终 `make` 和 `build.sh` 的最终 `make` 都必须带命令行变量；
+  `$GITHUB_ENV` / `export` 只是把值传到“调用 make 的那一层”
 - `gen-config.sh` 的回读校验**不能**再查 `.config` 里的 `CONFIG_VERSION_CODE`
   （走 REVISION 路线根本没那一行，查了必然误报）。
   **真正的判据在 `verify-firmware.sh`**：解开 squashfs 直接看
@@ -899,68 +903,80 @@ CI 里由 `scripts/build-stamp.sh` 算好后经 `$GITHUB_ENV` 传给后续所有
 **全程必须同一个值**，否则会出现「版本串写 00:31、文件名写 00:32」这种没法排查的错。
 
 
-### 坑 21：REVISION 导出排在 eval 之前 → 整个坑 15 的修复被自己抵消（2026-10-16）
+### 坑 21：版本串只 export，被顶层 toplevel.mk 覆盖（2026-10-16 / 2026-10-17 更正）
 
-**坑 15 的回归。** 由「在 WSL 里解开 Run #32 固件直接看内容」发现 —— 这正是
-项目文档反复强调的做法（「CI 每次 90 分钟起步，别拿它当调试器」）。
+**坑 15 的回归，而且修了两次才找对。** 由「在 WSL 里解开固件直接看内容」发现 ——
+这正是项目文档反复强调的做法（「CI 每次 90 分钟起步，别拿它当调试器」）。
 
 #### 症状：文件名带戳、版本串不带
 
 ```
-文件名          immortalwrt-...-squashfs-sysupgrade-20261016.1437.bin   ← 有戳
+文件名          immortalwrt-...-squashfs-sysupgrade-20261017.1013.bin   ← 有戳
 /etc/openwrt_version   r0+38202-313718c25f                               ← 没戳
 DISTRIB_DESCRIPTION    ImmortalWrt 25.12-SNAPSHOT r0+38202-313718c25f    ← 没戳
 ```
 
-用户在 LuCI「系统」页看到的是 `ImmortalWrt 25.12-SNAPSHOT r0+38202-313718c25f`，
-**永远看不到构建时间** —— 坑 15 想解决的正是这个。
+#### 第一层 bug：GITHUB_ENV 写进了空值（已修）
 
-#### 根因：一行写在 `eval` 之前
+`build.yml` 原来把 `REVISION=$TENDA_BUILD_VERSION` 写在 `eval` **之前**，
+那时变量还没赋值，GITHUB_ENV 里是 `REVISION=`。挪到 `eval` 之后 + 空值保险丝，
+这是必要的，但**不是全部**。
 
-`build.yml` 的「生成构建时间戳」步骤：
+#### 第二层 bug（真根因）：环境变量被 makefile 覆盖
 
-```sh
-vals="$(./scripts/build-stamp.sh "$OPENWRT_SRC")"
-echo "$vals"
-echo "$vals" >> "$GITHUB_ENV"                    # ← 只对**后续步骤**生效
-echo "REVISION=$TENDA_BUILD_VERSION" >> "$GITHUB_ENV"   # ⛔ 此时变量还是空的
-eval "$(echo "$vals" | sed ...)"                 # ← 到这里才真正 export
+Run #33 的证据：第 19 步「编译固件」的环境里明明有：
+
+```
+REVISION: git-313718c25f-20261017.1013
 ```
 
-**讽刺的是作者知道这个坑** —— 紧挨着的注释原话是：
-「上面是写到 GITHUB_ENV，**本步骤的 shell 里并没有这些变量**」（Run #20 的教训）。
-他用 `eval` 修好了**当前 shell 的打印**，却忘了 `REVISION` 那一行写进
-GITHUB_ENV 的是**空字符串**。
+但固件仍是 `r0+38202-313718c25f`。原因在 ImmortalWrt 25.12 的
+`include/toplevel.mk`（锁定 commit `313718c25f`）：
 
-而 GITHUB_ENV 对**后续所有步骤**生效 —— 包括真正编译固件那一步。
-于是 make 拿到 `REVISION=""`，退回 `getver.sh` 现场算出版本号，时间戳丢失。
+```make
+ifeq ($(SDK),1)
+  include $(TOPDIR)/include/version.mk
+else
+  REVISION:=$(shell $(TOPDIR)/scripts/getver.sh)
+  SOURCE_DATE_EPOCH:=$(shell $(TOPDIR)/scripts/get_source_date_epoch.sh)
+endif
+export REVISION
+```
 
-> **为什么文件名没事**：文件名后缀走的是 `TENDA_BUILD_STAMP`，
-> 那一步的 GITHUB_ENV 是对的。**两个值来自不同的机制，只坏了一个**，
-> 于是现象变成「一半对一半错」，比全错更难查。
+顶层 `MAKELEVEL=0` 时**无条件**给 REVISION 赋值。GNU make 的优先级是
+**命令行 > makefile > 环境**，所以只 `export REVISION` / 只写 `GITHUB_ENV`
+都会在这里被 `getver.sh` 顶掉。
 
-#### 修法
+#### 正确的修法：make 命令行变量
 
-把 `REVISION` 的导出挪到 `eval` **之后**，并加一道保险丝：
-`TENDA_BUILD_VERSION` 为空就当场 `exit 1`，别等到刷完机才发现。
+CI 和本地 `build.sh` 的最终 make 都改成：
+
+```sh
+make -j... REVISION="$TENDA_BUILD_VERSION" VERSION_CODE="$TENDA_BUILD_VERSION" V=s
+```
+
+- 命令行 REVISION 覆盖 toplevel.mk 的赋值；
+- `include/version.mk` 的 `VERSION_CODE := $(if $(VERSION_CODE),...,$(REVISION))`
+  会跟着拿到同一个值；
+- `DISTRIB_REVISION` / `DISTRIB_DESCRIPTION` / `/etc/openwrt_version` 才会一致。
 
 #### 验证
 
-`.sshhelper/test-guard-revision.sh` ——
-把新旧两种写法各跑一遍，**直接对比 GITHUB_ENV 的实际内容**：
+`.sshhelper/test-guard-revision.sh` 现在做四件事：
 
-```
-旧写法（Run #32 用的）: REVISION=
-新写法（修好后）      : REVISION=git-313718c25f-20261016.1437
-```
-
-另加行序检查 + 保险丝存在性检查，三项全过。
+1. 检查 GITHUB_ENV 的 REVISION 仍然写在 `eval` 之后；
+2. 用一个迷你 Makefile 复现「只 export 时被 makefile 覆盖」；
+3. 验证 `make REVISION=...` 命令行变量确实生效；
+4. 静态检查 `build.yml` 和 `build.sh` 的 make 调用都带了
+   `REVISION=` / `VERSION_CODE=`。
 
 > ### 通用教训
 > **`GITHUB_ENV` 是单向的：写进去只对后续步骤生效，对当前 shell 无效。**
 > 「先写 GITHUB_ENV 再在本步骤里用同一个变量」这种写法，
 > 写出来永远是空值，而且**日志里看不出来** —— 只有当那个值
 > 本该出现在最终产物里的时候，才会以「产物少了个东西」的形式暴露出来。
+> 更近一层：**环境变量也不等于 make 变量** —— makefile 的普通赋值会覆盖环境，
+> 只有 `make VAR=...` 命令行变量能稳定压过它。两层都对了，版本串才真的进固件。
 
 ### 坑 22：自建源只收 `bin/packages` → 所有 kmod 被漏掉（2026-10-17）
 
@@ -1529,15 +1545,16 @@ Run #32 的关键证据（不是推断）：
 - 但收包日志是 `收拢 183 个 .apk`，随后 `检查了 0 个 kmod`。
 
 **面板编译结果仍然是独立的未知项。** Run #31 的“9 个面板没找到 define Package/”
-已经由坑 20 修复；Run #33 是修复后的第一次真实编译。面板能不能在 25.12 上编过，
-要看 Run #33 的第 25~27 步，不能再用「kmod 缺失」反推。
+已经由坑 20 修复。但 Run #33 在第 24 步版本抽查失败，第 25~27 步被**跳过**，
+所以面板的真实编译错误还没有拿到；要等版本修复后的下一轮，不能再用
+「kmod 缺失」反推面板状态。
 
 **下一步**：
 
-1. 等 Run #33 完成，先验坑 21（`/etc/openwrt_version` 是否带时间戳），
-   再看面板预编译日志里的真实 ERROR；
-2. 把坑 22/23 的修复提交并触发下一轮，验收 `kmods > 0` 且
-   `kmod-nft-tproxy` 在源中，发布脚本不再假成功；
+1. Run #33 已证伪“export REVISION 就够”的假设；最终 make 已改走命令行变量，
+   等下一轮验 `/etc/openwrt_version`；
+2. 从 Run #34 的 `apk-repo-34` artifact 验收 `kmods > 0` 且
+   `kmod-nft-tproxy` 在源中；
 3. 面板即使编不过，只要 kmod 收集正确，自建源的命门就已经打通；
    面板缺失单独处理，不再阻断源发布；
 4. Pages 发布成功后，再决定是否把源地址固化进固件。
@@ -1564,8 +1581,8 @@ Run #32 的关键证据（不是推断）：
 
 ### 7.3 优先级最高：上机验证
 
-**固件构建链路已全绿，接下来该做的是让用户刷上去。** 构建体系本身已稳定
-（坑 1~23 均有解，其中坑 22/23 的收集与发布修复待下一轮 CI 验收）。
+**固件已能完整编出，但 Run #33 的版本抽查失败已经定位并修复，待下一轮 CI 验证。**
+坑 1~23 均有对应修法；上机前应先拿到版本抽查通过的固件。
 
 给用户的刷机要点（详见 `README.md` §7、§4.9）：
 
@@ -1859,15 +1876,15 @@ grep -q 'build-stamp.sh.*GITHUB_ENV\|tee -a "\$GITHUB_ENV"' .github/workflows/bu
   || echo "❌ CI 没有把时间戳导出到 GITHUB_ENV（各步骤会各算各的）"
 grep -q 'stamp-firmware.sh' .github/workflows/build.yml \
   || echo "❌ CI 里没调 stamp-firmware.sh（文件名不会带日期）"
-# ⚠️ 版本串**不走 .config**，走 REVISION 环境变量（坑 15，Run #20/#21 连栽两次）。
-#    CONFIG_VERSION_CODE 在 `if IMAGEOPT` 的不可见菜单块里，
-#    defconfig 会静默删掉，而日志一切正常。
-grep -qF 'export REVISION="${REVISION:-$TENDA_BUILD_VERSION}"' scripts/gen-config.sh \
-  || echo "❌ gen-config.sh 没有 export REVISION（版本串不会生效）"
+# ⚠️ 版本串**不走 .config**，而且**只 export 也不够**：顶层 toplevel.mk
+#    会无条件 REVISION:=$(shell getver.sh)，环境变量被 makefile 覆盖。
+#    CONFIG_VERSION_CODE 在 `if IMAGEOPT` 的不可见菜单块里，defconfig 会静默删掉。
 grep -qF 'echo "REVISION=$TENDA_BUILD_VERSION" >> "$GITHUB_ENV"' .github/workflows/build.yml \
-  || echo "❌ CI 没有把 REVISION 导出到 GITHUB_ENV"
-grep -qF 'export REVISION=' scripts/build.sh \
-  || echo "❌ build.sh 没在自己这层 export —— gen-config.sh 是子进程，export 回不来"
+  || echo "❌ CI 没有把 REVISION 传到 make 调用层"
+grep -qF 'make -j$(nproc) REVISION="$TENDA_BUILD_VERSION" VERSION_CODE="$TENDA_BUILD_VERSION" V=s' .github/workflows/build.yml \
+  || echo "❌ CI 的最终 make 没带命令行 REVISION/VERSION_CODE（坑 21）"
+grep -qF 'make -j"$JOBS" REVISION="$REVISION" VERSION_CODE="$REVISION" V=s' scripts/build.sh \
+  || echo "❌ build.sh 的最终 make 没带命令行 REVISION/VERSION_CODE（坑 21）"
 grep -qF 'echo "CONFIG_VERSION_CODE=' scripts/gen-config.sh \
   && echo "❌ 还在往 .config 写 CONFIG_VERSION_CODE —— 会被 defconfig 删掉（坑 15）"
 grep -qF 'echo "CONFIG_VERSIONOPT=y"' scripts/gen-config.sh \
