@@ -1,9 +1,9 @@
 # 交接文档 · 交给 Codex
 
 > 面向对象：在本机用 Codex CLI 接手本项目的 agent / 人。
-> 写作时间：2026-10-17 · 对应分支 `immortalwrt-25.12` · HEAD `48b8fbe`
+> 写作时间：2026-10-17 · 对应分支 `immortalwrt-25.12` · HEAD `7e136a6`
 >
-> **本文不重复 `AGENTS.md`**（那是项目的完整技术档案，坑位清单 1~21 都在里面）。
+> **本文不重复 `AGENTS.md`**（那是项目的完整技术档案，坑位清单 1~22 都在里面）。
 > 本文只讲三件 `AGENTS.md` 不会讲的事：
 > ① **Codex 在这台机器上怎么跑** ② **本机环境的陷阱** ③ **当前真实状态**。
 
@@ -16,7 +16,7 @@
 | 项目 | 为 Tenda BE12 Pro 定制 OpenWrt 主路由固件 |
 | 仓库 | `r3zound/Tenda-BE12-Pro-OpenWrt`（**公开**） |
 | 分支 | `immortalwrt-25.12`（= GitHub 默认分支），内核 6.12 |
-| 项目根 | `/mnt/c/Users/LG/workspace/minimax/Tenda-BE12-Pro-OpenWrt/Tenda-BE12-Pro-OpenWrt` |
+| 项目根 | `/mnt/c/Users/LG/Documents/Codex/Tenda-BE12-Pro-OpenWrt/Tenda-BE12-Pro-OpenWrt` |
 | 数据目录 | 在项目根的**上级**（`.sshhelper/`、`.repo-keys/`、`固件/`、`备份/` 等） |
 | 构建 | GitHub Actions，约 90 分钟/轮，ccache 命中后 |
 | 固件现状 | 构建链路全绿，**最新固件尚未上机验证** |
@@ -80,7 +80,7 @@ Codex 的 sandbox / approval policy 由 `config.toml` 与命令行 `-c key=value
 
 ```sh
 # 项目根（git 仓库）
-cd /mnt/c/Users/LG/workspace/minimax/Tenda-BE12-Pro-OpenWrt/Tenda-BE12-Pro-OpenWrt
+cd /mnt/c/Users/LG/Documents/Codex/Tenda-BE12-Pro-OpenWrt/Tenda-BE12-Pro-OpenWrt
 
 # 数据目录在**上级**，不是仓库里
 ls ../.sshhelper/        # 428 个运维脚本（本机独有，git 里没有）
@@ -90,7 +90,7 @@ ls ../备份/              # 原厂 mtd 分区，刷砖救砖唯一来源
 ```
 
 ⚠️ **`AGENTS.md` 是 Codex 的入口文件，先完整读一遍再动手。**
-它有 1000+ 行，包含：坑位清单 1~21、项目结构、构建方式、43 条自检项。
+它有 1000+ 行，包含：坑位清单 1~22、项目结构、构建方式、43 条自检项。
 
 ### ⚠️ 仓库工作树必须保持干净
 
@@ -145,7 +145,9 @@ git 没收到确认就按乐观锁失败报错。**远端早就是新 commit 了
 ### ④ 网络本身会间歇性失败
 
 - `github.com` 直连超时/被重置，**必须走代理** `http://127.0.0.1:7897`
-- git 必须 `http.sslBackend = openssl`（schannel 会报 TLS EOF），`http.version = HTTP/1.1`
+- Windows Git Bash 必须 `http.sslBackend = openssl`（schannel 会报 TLS EOF）；
+  **WSL 自带 Git 不支持 openssl 后端**，那里要保持未设置，否则会报
+  `Unsupported SSL backend 'openssl'`。两边都建议 `http.version = HTTP/1.1`
 - 链路会**间歇 TLS EOF**，一次失败不代表结论 → 走 `retry-git.sh`
 - 拉 Actions 日志**必须带 `Authorization` 头**（不带实测 403），
   且用 `C:\Program Files\Git\ucrt64\bin\curl.exe` 走代理；
@@ -186,7 +188,7 @@ CI 全绿、`verify-firmware.sh` 的 60+ 项抽查全过，只有真正把 squas
 
 ## 5. 当前真实状态
 
-### ✅ 已经修好的（坑 1~21 全部有解，构建链路全绿）
+### ✅ 已经修好的（坑 1~22 均有解；坑 22 待下一轮 CI 验证）
 
 最近三轮结果：
 
@@ -208,14 +210,19 @@ CI 全绿、`verify-firmware.sh` 的 60+ 项抽查全过，只有真正把 squas
 链路全通（签名 ✅、收包 ✅、索引生成+签名 ✅），但**源里 0 个 kmod**，
 硬校验按设计 fail-closed 拒绝发布。
 
-根因链：12 个面板里 5 个在 25.12 上编不过 → 它们是 `kmod-nft-tproxy` 的需求方
-→ 这些 kmod 不会被编 → 源里没有 kmod → 拒绝发布。
+**2026-10-17 更正**：Run #32 的 artifact 里明明有
+`packages/kmod-nft-tproxy-6.12.108-r1.apk`，日志里也有 `apk mkpkg` 产出记录；
+真正的问题是 `build-repo.sh` 只收 `bin/packages/<arch>/`，漏掉了
+`bin/targets/mediatek/filogic/packages/`。kmod 一直编出来了，只是没被收进源。
+完整证据见 `AGENTS.md` §5 坑 22。
 
-**关键未知：这些面板到底能不能在 25.12 上编过。** 它们从来没被真正编译过
-（坑 20 之前是被"看不见"，不是编译失败）。修好发现只是让它**第一次真编译**。
+修复已落地并用 `.sshhelper/test-collect-packages.sh` 验证：旧逻辑漏 kmod，
+新逻辑同时收 arch 包和目标包。**下一轮 CI 的验收判据是 `kmods > 0` 且
+`kmod-nft-tproxy` 在源中。**
 
-面板清单里 9 个仍「没找到 define Package/」→ 只剩 3 个：
-`OpenWrt-nikki-rs`、`clash-rs`、`luci-app-openclash`（待复查）。
+**面板能不能在 25.12 上编过是另一个独立问题。** 坑 20 已修好包名发现，
+Run #33 是第一次让这些面板真正进入编译；结果看第 25~27 步，不能再拿
+「kmod 缺失」反推面板状态。
 
 > 注意：用户的实际需求（双 WAN / 无线 / LuCI 主题 / kmod）**都不依赖自建源** ——
 > kmod 走官方镜像站就能装（`AGENTS.md` 坑 14 的 `add_kmods_feed()` 已经解决）。
@@ -225,7 +232,8 @@ CI 全绿、`verify-firmware.sh` 的 60+ 项抽查全过，只有真正把 squas
 **2. 固件尚未上机验证** —— 构建全绿不等于设备可用。
 这是目前最高优先级的**业务**事项（技术侧已经收敛）。
 
-**3. Run #33 待验证**（坑 21 的修复，2026-10-17 02:12 启动）
+**3. Run #33 待验证**（坑 21 的修复，2026-10-17 02:12 UTC 启动；
+接手时仍处于第 19 步「编译固件」）
 
 ---
 
@@ -287,7 +295,7 @@ cmd /c "git credential fill < <协议文件>"   # 从凭据管理器读
 
 ## 8. 别重复踩的坑
 
-**完整清单在 `AGENTS.md` §5（21 个），每条都有成因、证据和守卫脚本。** 不在这里重复。
+**完整清单在 `AGENTS.md` §5（22 个），每条都有成因、证据和守卫脚本。** 不在这里重复。
 
 最值得先记住的四条，因为它们有一个共同点 —— **全部静默失败**：
 
@@ -298,7 +306,7 @@ cmd /c "git credential fill < <协议文件>"   # 从凭据管理器读
 | 坑 15 / 21 | 版本时间戳：文件名和固件内版本串**必须**是同一个值，且 `GITHUB_ENV` 是单向的 |
 | 坑 19 / 20 | 工具写窄了就等于「上游不兼容」；`set -e` 下守卫写在失败命令之后等于死代码 |
 
-**一条通用原则**（本项目 21 个坑的共同教训）：
+**一条通用原则**（本项目 22 个坑的共同教训）：
 
 > **报错、绿灯、`ok` 退出码，全都证明不了「东西真的进去了」。**
 > 判断的唯一方式是**去看产物本身**。
@@ -313,5 +321,6 @@ cmd /c "git credential fill < <协议文件>"   # 从凭据管理器读
 - [ ] 跑 `bash ../.sshhelper/check-migration.sh`，确认 FAIL=0
 - [ ] 确认 `git status --porcelain` 为空（工作树干净）
 - [ ] 查 Run #33 结果，验证坑 21 的修复（版本串是否带回时间戳）
-- [ ] 决定自建源那条线的取舍（面板能不能编过 → 只有跑一轮才知道）
+- [ ] 验收坑 22：新源里 `kmods > 0`、`kmod-nft-tproxy` 在位
+- [ ] 单独看 Run #33 的面板预编译结果（不再和 kmod 收集混为一谈）
 - [ ] 决定是否把固件刷到设备上做上机验证（目前最高优先级的业务事项）

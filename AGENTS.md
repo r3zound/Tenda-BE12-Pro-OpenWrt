@@ -24,7 +24,7 @@
 | **开发分支** | **`immortalwrt-25.12`**（= GitHub 默认分支）· `main` = OpenWrt SNAPSHOT 线，非默认 |
 | **基线** | **ImmortalWrt `openwrt-25.12`**，commit `313718c25f206cdeee399bdc6c002b7388c9a513`（锁 SHA，不锁分支名） |
 | **目标** | `mediatek/filogic` / `tenda_be12-pro`（MT7987A，512MB DDR4，128MB SPI-NAND） |
-| **当前状态** | ✅ 固件构建链路全绿（坑 1~19 全部修完）；✅ **ccache 已真正生效**（命中 10%→28%，耗时 3h13m→1h41m）；⬜ **新固件尚未上机验证** |
+| **当前状态** | ✅ 固件构建链路全绿（坑 1~22 均有解，坑 22 待新一轮 CI 验收）；✅ **ccache 已真正生效**（命中 10%→28%，耗时 3h13m→1h41m）；⬜ **新固件尚未上机验证** |
 | **最新成功 CI** | Run #30（`6ee6254`，2026-10-16）—— 固件全绿，**自建源因缺 kmod 拒绝发布**（见 §7.1） |
 | **编译耗时** | **1h41m**（Run #30，ccache 命中后）· 冷构建 3h13m（Run #29） |
 | **CI 触发** | 手动 `workflow_dispatch` / 推 tag / 每周定时。**⛔ 推分支不触发构建**（见下） |
@@ -286,9 +286,9 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 
 ---
 
-## 5. ⚠️ 完整坑位清单（21 个，全部静默失败）
+## 5. ⚠️ 完整坑位清单（22 个，全部静默失败）
 
-**这二十一个坑的共同点：链路上没有任何一个环节会报错。**
+**这二十二个坑的共同点：链路上没有任何一个环节会报错。**
 形态都是「编译成功 → CI 绿 → 守卫过 → 固件里东西是错的」。
 
 完整成因与解法见 `README.md` §13.2，这里只列速查：
@@ -316,12 +316,14 @@ fwtool -q -i /tmp/m.json openwrt-...-sysupgrade.bin && cat /tmp/m.json
 | 19 | **`set -e` 让守卫变死代码** | 脚本**静默退出**，连 die 的提示都不打 | 命令替换补 `\|\| true`；空 glob 用 `find` 不用 `ls` |
 | 20 | **包名发现认不出 make 变量** | 9/12 个面板「不存在」，却只 warn 一句像上游不兼容 | 正则放宽到 `Package/[^/[:space:]]+`，`$(VAR)` 到同一 Makefile 解析 |
 | 21 | **REVISION 导出排在 eval 之前** | 文件名带戳、固件内版本串不带（坑 15 回归） | 挪到 `eval` 之后 + 空值保险丝 |
+| 22 | **自建源只收 `bin/packages/`** | 收拢 183 个包、**0 个 kmod**，硬校验拒绝发布 | 同时收 `bin/targets/<board>/<sub>/packages/`（kmod 在这里） |
 
 > 坑 1~15 是 `main`（OpenWrt SNAPSHOT / 内核 6.18）线上踩的；
-> **坑 16~20 是 `immortalwrt-25.12`（内核 6.12）独有的**，成因不同，不要互相套用。
+> **坑 16~22 是 `immortalwrt-25.12`（内核 6.12）独有的**，成因不同，不要互相套用。
 > 其中坑 17/18 的根因都是同一类病：**上游 kconfig 的「不可见即被删」**；
 > 坑 19 又是同一类病的第三形态：**`set -e` 下守卫写在失败命令之后等于没写**；
 > 坑 20 是第四形态：**工具的正则太窄，把「另一种合法写法」当成「不存在」**。
+> 坑 21/22 都是自建源链路的「产物已经对了，收集/导出环节没拿到」。
 
 
 ### 🔴 坑 9：uci batch 的段类型（2026-10-03 实机取证发现）
@@ -958,6 +960,43 @@ GITHUB_ENV 的是**空字符串**。
 > 写出来永远是空值，而且**日志里看不出来** —— 只有当那个值
 > 本该出现在最终产物里的时候，才会以「产物少了个东西」的形式暴露出来。
 
+### 坑 22：自建源只收 `bin/packages` → 所有 kmod 被漏掉（2026-10-17）
+
+**症状**：`build-repo.sh` 明明收拢了 183 个 `.apk`，日志却是：
+
+```
+✅ 收拢 183 个 .apk（aarch64_cortex-a53）
+检查了 0 个 kmod
+❌ kmod-nft-tproxy 不在源里
+❌ 硬校验未通过，拒绝发布
+```
+
+**真因**：OpenWrt 把**目标专属包**（kmod、firmware 等）放在
+`bin/targets/<board>/<subtarget>/packages/`，通用包和 arch 包才在
+`bin/packages/<arch>/`。旧代码只从后者收包，所以 kmod 一个都进不了自建源。
+
+**这不是「面板没编过导致 kmod 没被编」**。Run #32 的产物和日志已经直接证明：
+
+- `configs/base.config` 里 `CONFIG_PACKAGE_kmod-nft-tproxy=y`；
+- artifact 里有 `packages/kmod-nft-tproxy-6.12.108-r1.apk`（3402 字节）；
+- 完整日志里有 `apk mkpkg ... --output .../kmod-nft-tproxy-6.12.108-r1.apk`；
+- 但 `build-repo.sh` 收包时只看 `bin/packages/aarch64_cortex-a53/`。
+
+也就是说，**kmod 一直编出来了，只是在另一个目录里没被收走**。
+旧结论把「源里 0 个 kmod」和「面板编译失败」连成因果链，但前者有独立且更直接的
+证据 —— 这正是本项目反复强调的「先看产物，再下结论」。
+
+**修法**：
+
+- 包集目录仍从 `bin/packages/*/packages.adb` 发现；
+- 目标包目录从 `.config` 的 `CONFIG_TARGET_BOARD` / `CONFIG_TARGET_SUBTARGET`
+  反推，兜底选唯一的非空 `bin/targets/*/*/packages/`；
+- 两个目录都交给 `collect_packages()` 收包，保留重名不同内容告警。
+
+**验证**：`.sshhelper/test-collect-packages.sh` 从 `build-repo.sh` 抽取真实函数，
+合成「arch 包 + target kmod」目录树，验证旧路径漏 kmod、新路径两个都收、
+重名冲突仍能发现。
+
 ### 坑 16：`tenda-preset` 漏装 wireless → 坑 10 的漏网分支（2026-10-13）
 
 `a2368a9` · 两个互相独立的 bug，都表现为「固件内容抽查失败」。
@@ -1411,103 +1450,45 @@ ref 语法：分支用 `;`，commit 用 `^`。
 
 ## 7. 当前待办
 
-### 7.1 ⬜ 进行中：自建 apk 源 —— 发现逻辑已修，等验证面板能否编过
+### 7.1 ⬜ 进行中：自建 apk 源 —— kmod 收集路径已修，待新一轮验证
 
-**2026-10-16 更新**：上一版把这里写成「暂不投入」并归因为「上游不兼容」——
-**那个归因是错的**（详见 §5 坑 20）。实际情况是 9/12 个面板被我们自己的
-包名发现逻辑漏掉了。**发现逻辑的修复已实施并本地验证**（6 个真实仓库样本，
-3 个从完全失明恢复正常，3 个无回归）。**剩下的未知：这些面板到底能不能在
-25.12 上编过** —— 它们从来没被真正编译过一次。
+**2026-10-17 更正**：上一版把「源里 0 个 kmod」归因为「面板没编过 →
+kmod 没被编」。Run #32 的产物证明这个归因不完整：`kmod-nft-tproxy` 已经编出来了，
+但 `build-repo.sh` 只收 `bin/packages/<arch>/`，没有收
+`bin/targets/mediatek/filogic/packages/`。这是**收集路径漏项**，详见 §5 坑 22。
 
-**这一项曾经是「头号待办」，现在降级 —— 不是因为修好了，而是因为它解决的问题
-在本分支上并不成立。** 下面是 Run #29/#30 实测出来的完整结论。
-
-#### 链路本身已经通了
-
-Run #29 是这条链路第一次真正执行（`TENDO_REPO_PRIVATE_KEY` 配好之后），
-Run #30 修完坑 19 后走得最远的一次：
+当前链路状态：
 
 | 环节 | 状态 | 证据 |
 |---|---|---|
 | 注入签名私钥 | ✅ | `密钥对校验通过（pubkey sha256 74ea4b938d1c9496…）` |
 | 拉取面板仓库 | ✅ | 12 个仓库，1 个不可用（clash-rs 无 Makefile） |
-| 找包集目录 | ✅ | `包集目录: aarch64_cortex-a53`（坑 19 修复生效） |
-| 收包 | ✅ | `收拢 165 个 .apk` |
-| 生成并签名索引 | ✅ | `索引 30994 字节`、`签名确实生效（与不签名的产物不同）` |
-| **发布** | ❌ | `kmod-nft-tproxy 不在源里` → 硬校验拒绝 |
+| 包名发现（坑 20） | ✅ | 6 个真实样本，3 个从失明恢复，3 个无回归 |
+| 通用包收包 | ✅ | Run #32 收拢 183 个 `.apk` |
+| **目标包收包（坑 22）** | 🟡 本地已修 | 新逻辑同时收 `bin/targets/<board>/<sub>/packages/` |
+| 索引生成/签名 | ✅ | Run #30 索引 30994 字节，签名与不签名产物不同 |
+| 发布 | ⬜ | 等新一轮构建验证源里真的有 kmod |
 
-#### 发不出去的原因
+Run #32 的关键证据（不是推断）：
 
-```
-固件内核: 6.12.108
-检查了 0 个 kmod              ← 自建源唯一的存在理由，一个都没有
-❌ kmod-nft-tproxy 不在源里
-❌ 硬校验未通过，拒绝发布（Pages 会保留上一版好内容）
-```
+- `.config` 里 `CONFIG_PACKAGE_kmod-nft-tproxy=y`；
+- artifact 的 `packages/` 下有 `kmod-nft-tproxy-6.12.108-r1.apk`（3402 字节）；
+- 完整日志里有 `apk mkpkg ... --output .../kmod-nft-tproxy-6.12.108-r1.apk`；
+- 但收包日志是 `收拢 183 个 .apk`，随后 `检查了 0 个 kmod`。
 
-链条是：**12 个面板里 9 个压根没被发现成包 → 没进 `.config` →
-依赖的 kmod 不会被编 → 源里 0 个 kmod → 硬校验拒绝发布。**
+**面板编译结果仍然是独立的未知项。** Run #31 的“9 个面板没找到 define Package/”
+已经由坑 20 修复；Run #33 是修复后的第一次真实编译。面板能不能在 25.12 上编过，
+要看 Run #33 的第 25~27 步，不能再用「kmod 缺失」反推。
 
-Run #31 日志里的直接证据：
+**下一步**：
 
-```
-⚠️  openwrt-passwall 里没找到 define Package/ —— 上游结构变了？
-⚠️  openwrt-passwall2 里没找到 define Package/
-⚠️  OpenWrt-nikki-rs 里没找到 define Package/
-⚠️  luci-app-openclash 里没找到 define Package/
-... 共 9 个
-✅ 共发现 5 个包定义
-```
-
-> ### 🔴 2026-10-16 更正：**这不是上游不兼容，是我们自己的发现逻辑有 bug**
->
-> 此前（本文件上一版）把原因写成「这些面板面向 OpenWrt mainline，
-> 在 25.12 上编不过」——**那是错的，是没查就下的结论**。
-> 本地克隆 `openwrt-passwall` 复现后，真相是：
->
-> ```sh
-> # luci-app-passwall/Makefile
-> PKG_NAME:=luci-app-passwall          # 第 9 行
-> define Package/$(PKG_NAME)/config   # 第 40 行 —— 包名是个 make 变量
-> ```
->
-> 而 `build-repo.sh` 的 `discover_pkgs()` 正则是：
->
-> ```sh
-> grep -hoE '^[[:space:]]*define[[:space:]]+Package/[A-Za-z0-9._+-]+' "$mf"
-> ```
->
-> `Package/` 后面要求 1 个以上 `[A-Za-z0-9._+-]`，而实际下一个字符是 `$` ——
-> **整行匹配不上，返回空**。9 个面板用的是 `Package/$(PKG_NAME)` 这种写法，
-> 于是全部「看不见」。
->
-> 顺带一提：日志里那 5 个「编译失败」是**发现失败的后果**，不是独立的编译问题 ——
-> 没进 `.config`，`make package/<目录>/compile` 自然没有目标，
-> 失败得悄无声息（`/tmp/repo-*.log` 是空的）。
->
-> **修法已本地验证可行**（`.sshhelper/test-discover-pkgs.sh`，
-> 用真实克隆的 passwall 仓库当样本）：正则放宽成
-> `Package/[^/[:space:]]+`，遇到 `$(VAR)` 时在**同一个 Makefile** 里
-> 解析该变量取值。字面名写法（mosdns 那种）不受影响。
->
-> ⚠️ 但**修好发现 ≠ 面板就能编过**。这些面板从来没被真正编译过一次，
-> 能不能在 25.12 上编过目前**未知** —— 这才是需要投入才能回答的问题。
-> 按 2026-10-16 的决定，暂不投入；但别再把原因记成「上游不兼容」。
-
-> ✅ **一个好消息：fail-closed 机制按设计工作了。**
-> 硬校验没有因为「面板编译失败」就放水，而是老老实实因为「缺命门 kmod」拒绝发布，
-> Pages 上保留着上一版好内容。**这是这套守卫第一次在真实故障下证明自己不是摆设** ——
-> 参见 §5 坑 19 末尾「绿灯证明不了任何事」那几条，本项目被这种情况骗过很多次。
-
-#### 如果将来要重新捡起这条线
-
-1. ~~先应用发现逻辑的修复~~ —— **已实施**（commit 见 §5 坑 20）
-2. **下一步**：跑一轮构建看 9 个面板第一次真正编译的结果。
-   修好发现 ≠ 面板就能编过；日志里现在能看到真实 ERROR 行了。
-3. 面板编译通过 → kmod 才会有 → 硬校验才可能放行 → 自建源才能发布。
-4. 如果面板确实编不过，那时再考虑：改用 `main` 分支（内核 6.18，
-   面板更可能编过），或者干脆放弃自建源
-   （官方 kmods 源已经能装，见坑 14 的 `add_kmods_feed()`）。
+1. 等 Run #33 完成，先验坑 21（`/etc/openwrt_version` 是否带时间戳），
+   再看面板预编译日志里的真实 ERROR；
+2. 把坑 22 的修复提交并触发下一轮，验收 `kmods > 0` 且
+   `kmod-nft-tproxy` 在源中；
+3. 面板即使编不过，只要 kmod 收集正确，自建源的命门就已经打通；
+   面板缺失单独处理，不再阻断源发布；
+4. Pages 发布成功后，再决定是否把源地址固化进固件。
 
 ### 7.2 ⛔ 阻塞项：GitHub 凭据
 
@@ -1530,7 +1511,8 @@ Run #31 日志里的直接证据：
 
 ### 7.3 优先级最高：上机验证
 
-**固件构建链路已全绿，接下来该做的是让用户刷上去。** 构建体系本身已稳定（坑 1~19 全修）。
+**固件构建链路已全绿，接下来该做的是让用户刷上去。** 构建体系本身已稳定
+（坑 1~22 均有解，其中坑 22 的 kmod 收集修复待下一轮 CI 验收）。
 
 给用户的刷机要点（详见 `README.md` §7、§4.9）：
 
@@ -1950,6 +1932,17 @@ grep -nE 'var="\$\{name#\\\$\\?\}"' scripts/build-repo.sh \
 # 解析不出来必须出声，不能静默丢弃（那正是「面板不存在」的老问题）
 grep -q '解析不出值' scripts/build-repo.sh \
   || echo "❌ 变量解析失败没有告警 —— 会静默丢掉包定义（坑 20）"
+
+# 19. 自建源必须同时收通用包和目标包（坑 22）
+# ⚠️ kmod 在 bin/targets/<board>/<sub>/packages/，不在 bin/packages/<arch>/。
+#    只收后者会让「源里 0 个 kmod」看起来像面板没编过。
+grep -qF 'bin/targets/$TBOARD/$TSUB/packages' scripts/build-repo.sh \
+  || echo "❌ build-repo.sh 没发现 target packages 目录 —— kmod 会被漏掉（坑 22）"
+grep -qF 'collect_packages "$OUT" "$PDIR" "$TPDIR"' scripts/build-repo.sh \
+  || echo "❌ build-repo.sh 没有同时收 PDIR 和 TPDIR（坑 22）"
+bash ../.sshhelper/test-collect-packages.sh >/dev/null 2>&1 \
+  && echo "  ok  坑 22 收集路径回归测试通过" \
+  || echo "❌ 坑 22 收集路径回归测试失败"
 ```
 
 > 第 4 条的裸凭据 grep **只查 `password=`**，查不到 `WIFI_KEY=`。

@@ -328,16 +328,55 @@ fi
 ARCH="$(basename "$PDIR")"
 ok "包集目录: $ARCH  ($PDIR)"
 
-rm -rf "$OUT"; mkdir -p "$OUT"
-COLL=0
-while IFS= read -r f; do
-  b="$(basename "$f")"
-  if [ -e "$OUT/$b" ]; then
-    cmp -s "$f" "$OUT/$b" || { echo "  ${RED}重名不同内容${RST} $b"; COLL=$((COLL+1)); }
-  else
-    cp -f "$f" "$OUT/$b"
+# ⚠️⚠️ 只收 bin/packages/<arch>/ 会漏掉**所有内核模块**。
+#    实测 Run #32：kmod-nft-tproxy-6.12.108-r1.apk 确实已经编出来了，
+#    但它在 bin/targets/mediatek/filogic/packages/，不在 bin/packages/ 下。
+#    旧逻辑收拢了 183 个包、其中 0 个 kmod，于是把「收集路径漏项」
+#    误判成了「面板没编过 → kmod 没被编 → 源里没有 kmod」。
+#    这两个目录都必须收：
+#      - bin/packages/<arch>/          通用包 / arch 包
+#      - bin/targets/<board>/<sub>/    目标专属包（kmod、firmware 等）
+#
+#    目标目录不能写死 mediatek/filogic；从 .config 反推，换 target 不会失效。
+TBOARD="$(sed -n 's/^CONFIG_TARGET_BOARD="\([^"]*\)"$/\1/p' "$SRC/.config" | head -1 || true)"
+TSUB="$(sed -n 's/^CONFIG_TARGET_SUBTARGET="\([^"]*\)"$/\1/p' "$SRC/.config" | head -1 || true)"
+TPDIR=""
+if [ -n "$TBOARD" ] && [ -n "$TSUB" ] && [ -d "$SRC/bin/targets/$TBOARD/$TSUB/packages" ]; then
+  TPDIR="$SRC/bin/targets/$TBOARD/$TSUB/packages"
+else
+  # 兜底：当前 build root 里只应有一个非空的 target packages 目录。
+  TARGET_PKG_CANDIDATES=()
+  for cand in "$SRC"/bin/targets/*/*/packages; do
+    [ -d "$cand" ] || continue
+    n="$(find "$cand" -maxdepth 1 -name '*.apk' -type f 2>/dev/null | wc -l | tr -d ' ')"
+    [ "${n:-0}" -gt 0 ] && TARGET_PKG_CANDIDATES+=( "$cand" )
+  done
+  if [ "${#TARGET_PKG_CANDIDATES[@]}" -eq 1 ]; then
+    TPDIR="${TARGET_PKG_CANDIDATES[0]}"
   fi
-done < <(find "$PDIR" -name '*.apk' -type f | sort)
+fi
+[ -n "$TPDIR" ] || die "找不到 target packages 目录（kmod 会在 bin/targets/<board>/<sub>/packages/）"
+ok "目标包目录: $TPDIR"
+
+# 收包逻辑单独成函数，方便 .sshhelper 用合成目录树做回归测试（不要再测副本）。
+COLL=0
+collect_packages() { # $1=输出目录，其余参数=待收集的包目录
+  local out="$1"; shift
+  local root f b
+  rm -rf "$out"; mkdir -p "$out"
+  for root in "$@"; do
+    [ -n "$root" ] && [ -d "$root" ] || continue
+    while IFS= read -r f; do
+      b="$(basename "$f")"
+      if [ -e "$out/$b" ]; then
+        cmp -s "$f" "$out/$b" || { echo "  ${RED}重名不同内容${RST} $b"; COLL=$((COLL+1)); }
+      else
+        cp -f "$f" "$out/$b"
+      fi
+    done < <(find "$root" -name '*.apk' -type f | sort)
+  done
+}
+collect_packages "$OUT" "$PDIR" "$TPDIR"
 # ⚠️ 这里**必须用 find，不能用 `ls -1 "$OUT"/*.apk`** ——
 #    空 glob 时 ls 返回**退出码 2**（GNU ls 行为），pipefail 会把它冒泡上来，
 #    脚本当场静默退出。坑 15 / Run #27 栽过一次，这里是同一个地雷的另一个副本。
