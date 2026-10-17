@@ -67,11 +67,14 @@ put() { # $1=文件名
   [ -f "$f" ] || return 0
   # 只在目录列表里**精确匹配**同名项的 sha，不能全文乱取第一个 sha
   sha=""
-  line="$(echo "$list" | tr '{' '\n' | grep -F "\"name\":\"$1\"" | head -1)"
+  # ⚠️ 远端目录第一次不存在时，这里的 grep 必然返回 1。
+  #    在 set -euo pipefail 下，赋值语句自己就会失败，后面的「按新文件上传」
+  #    逻辑根本走不到 —— 现场表现是只打印「上传索引…」然后静默退出（坑 19 同款）。
+  line="$(echo "$list" | tr '{' '\n' | grep -F "\"name\":\"$1\"" | head -1 || true)"
   if [ -z "$line" ]; then
-    line="$(echo "$list" | tr '{' '\n' | grep -F "\"name\": \"$1\"" | head -1)"
+    line="$(echo "$list" | tr '{' '\n' | grep -F "\"name\": \"$1\"" | head -1 || true)"
   fi
-  sha="$(echo "$line" | grep -oE '"sha":\s*"[0-9a-f]{40}"' | head -1 | tr -d ' ' | cut -d'"' -f4)"
+  sha="$(echo "$line" | grep -oE '"sha":\s*"[0-9a-f]{40}"' | head -1 | tr -d ' ' | cut -d'"' -f4 || true)"
 
   b64="$(base64 -w0 < "$f")"
   if [ -n "$sha" ]; then
