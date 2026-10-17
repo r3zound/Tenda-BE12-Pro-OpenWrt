@@ -348,7 +348,7 @@ else
   TARGET_PKG_CANDIDATES=()
   for cand in "$SRC"/bin/targets/*/*/packages; do
     [ -d "$cand" ] || continue
-    n="$(find "$cand" -maxdepth 1 -name '*.apk' -type f 2>/dev/null | wc -l | tr -d ' ')"
+    n="$(find "$cand" -maxdepth 1 -name '*.apk' -type f 2>/dev/null | wc -l | tr -d ' ' || true)"
     [ "${n:-0}" -gt 0 ] && TARGET_PKG_CANDIDATES+=( "$cand" )
   done
   if [ "${#TARGET_PKG_CANDIDATES[@]}" -eq 1 ]; then
