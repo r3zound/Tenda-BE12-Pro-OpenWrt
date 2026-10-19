@@ -228,6 +228,12 @@ CI 全绿、`verify-firmware.sh` 的 60+ 项抽查全过，只有真正把 squas
 不能写 `r3zound/tenda-repo`。workflow 已改成缺 token 时明确失败，
 不会再把 403 伪装成发布成功。
 
+> 2026-10-19 复核：Run #36 的第 27 步已确认是收尾 `ls | head` 的 SIGPIPE，
+> 修复提交 `226bdbd` 已在远端；但 `r3zound/tenda-repo` 目前只有 README.md，
+> `immortalwrt-25.12/` 目录不存在，Pages 索引 URL 仍是 404。另已修掉
+> `publish-repo.sh` 打印地址多一层 `r3zound/` 的问题，并在 workflow 开头
+> 增加 token 预检，缺 token 时不再白烧一整轮构建。
+
 **面板能不能在 25.12 上编过是另一个独立问题。** 坑 20 已修好包名发现，
 但 Run #33 在版本抽查失败后把第 25~27 步跳过了；面板的真实错误要等
 版本修复后的下一轮，不能再拿「kmod 缺失」反推面板状态。
@@ -360,6 +366,7 @@ cmd /c "git credential fill < <协议文件>"   # 从凭据管理器读
 - [ ] 确认 `git status --porcelain` 为空（工作树干净）
 - [x] Run #36：版本串/固件内容抽查已通过
 - [x] 坑 22：Run #36 artifact 实测 281 包 / 82 kmod / `kmod-nft-tproxy` 在位
+- [x] Run #36 根因确认：第 27 步收尾 SIGPIPE；修复已在远端
 - [ ] 配 `TENDO_REPO_TOKEN` 后跑 Run #37，验收 Pages 上能取到 `packages.adb`
 - [ ] 面板仍有 5 个编译失败（passwall/passwall2/nikki/xray/fchomo），单独处理
 - [ ] 决定是否把固件刷到设备上做上机验证（目前最高优先级的业务事项）
