@@ -131,8 +131,11 @@ echo
 echo "${GRN}═══════════════════════════════════════════════════════════${RST}"
 echo "${GRN}  发布完成${RST}"
 echo "${GRN}═══════════════════════════════════════════════════════════${RST}"
-echo "  https://r3zound.github.io/$DEST/$DIR/packages.adb"
+# Pages 地址的路径只取仓库名：r3zound/tenda-repo → /tenda-repo/
+# 直接拼 $DEST 会变成 /r3zound/tenda-repo/，是 404。
+PAGES_REPO="${DEST#*/}"
+echo "  https://r3zound.github.io/$PAGES_REPO/$DIR/packages.adb"
 echo
 echo "  ${YEL}Pages 部署有 1-2 分钟延迟，之后设备才能拉到。${RST}"
-echo "  ${YEL}设备侧：echo 'https://r3zound.github.io/$DEST/$DIR/packages.adb'${RST}"
+echo "  ${YEL}设备侧：echo 'https://r3zound.github.io/$PAGES_REPO/$DIR/packages.adb'${RST}"
 echo "  ${YEL}        >> /etc/apk/repositories.d/customfeeds.list && apk update${RST}"
